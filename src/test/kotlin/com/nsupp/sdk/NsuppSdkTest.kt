@@ -94,6 +94,14 @@ class NsuppSessionTest {
         assertEquals("vt_1", store.read())
     }
 
+    @Test fun `acik konusma kimligi oturumda okunur`() {
+        // Okunmazsa ilk yoklamaya kadar durum "hiçbir konuşmada değilim" der ama mesajlar yüklüdür.
+        val http = SahteHttp(mutableListOf(200 to """{"data":{"visitorToken":"vt","conversation":{"id":"c7","status":"unresolved"},"messages":[]}}"""))
+        val s = NsuppSession(NsuppApi(cfg, http), InMemoryTokenStore())
+        s.start()
+        assertEquals("c7", s.state.conversationId)
+    }
+
     @Test fun `kisitli oturum sessiz kalmaz`() {
         val http = SahteHttp(mutableListOf(200 to """{"data":{"restricted":true}}"""))
         val s = NsuppSession(NsuppApi(cfg, http), InMemoryTokenStore())

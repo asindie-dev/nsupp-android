@@ -62,7 +62,7 @@ class NsuppSession(
                 return
             }
             r.visitorToken?.let { store.write(it) }
-            emit(apply(state.copy(error = null), r.messages))
+            emit(apply(state.copy(error = null, conversationId = r.conversationId), r.messages))
         } catch (e: Exception) {
             emit(state.copy(error = e.message ?: "Bağlantı kurulamadı"))
         }

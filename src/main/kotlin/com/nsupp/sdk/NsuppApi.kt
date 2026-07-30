@@ -82,11 +82,19 @@ class NsuppApi(private val config: NsuppConfig, private val http: NsuppHttp) {
         return SessionResult(
             visitorToken = Json.string(data, "visitorToken"),
             restricted = Json.bool(data, "restricted") ?: false,
+            // OKUNMASI ŞART: okumazsak ilk yoklamaya kadar (4 sn) oturum "hiçbir konuşmada değilim"
+            // der ama mesajları yüklemiştir — durum kendi kendine yalan söyler.
+            conversationId = Json.obj(data, "conversation")?.let { Json.string("{$it}", "id") },
             messages = Json.messages(data, "messages"),
         )
     }
 
-    data class SessionResult(val visitorToken: String?, val restricted: Boolean, val messages: List<NsuppMessage>)
+    data class SessionResult(
+        val visitorToken: String?,
+        val restricted: Boolean,
+        val conversationId: String?,
+        val messages: List<NsuppMessage>,
+    )
 
     /** Mesaj gönder. [conversationId] verilirse O konuya yazılır (çoklu konuşma). */
     fun sendMessage(token: String, text: String, conversationId: String?): SendResult {
