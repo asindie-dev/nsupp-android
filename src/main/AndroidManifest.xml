@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  İZİN İSTEMİYORUZ: INTERNET izni zaten uygulamanın manifest'inde vardır ve kütüphanenin ek izin
+  dayatması satıcının izin listesini kirletir. POST_NOTIFICATIONS (Android 13+) da uygulamanın
+  kararıdır — bildirimi biz göstermiyoruz (bkz. NsuppMessagingService).
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity
+            android:name="com.nsupp.sdk.android.NsuppChatActivity"
+            android:exported="false"
+            android:label="Destek" />
+    </application>
+</manifest>
