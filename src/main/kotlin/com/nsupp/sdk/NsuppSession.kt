@@ -49,15 +49,27 @@ class NsuppSession(
     private val seen = mutableSetOf<String>()
     private var lastTs: String? = null
 
+    /**
+     * Döngü durmalı mı — kalıcı hata ya da [reset] sonrası true. Zamanlayıcı ÇAĞIRANDA olduğu için
+     * bu sınıf döngüyü kendisi kesemez; bayrağı okuyup duran taraf Android kabuğudur.
+     */
+    var stopped: Boolean = false
+        private set
+
     val visitorToken: String? get() = store.read()
 
     /** Oturumu aç (ilk açılışta ziyaretçi üretilir) ve geçmişi yükle. */
     fun start() {
+        stopped = false
         try {
             val r = api.openSession(store.read())
             // KISITLI (sayfa/ülke/IP kuralı): sunucu sohbeti kapattı. Sessiz boş ekran DEĞİL —
             // "sessiz kilit = teşhis edilemez hata"; arayüz sebebi gösterebilsin.
             if (r.restricted) {
+                // Jeton BU DALDA DA saklanır: saklamazsak her açılışta sunucu YENİ ziyaretçi satırı
+                // (ve onunla IP/coğrafya kaydı) üretir — kısıtlanmış bir ziyaretçi için sınırsız
+                // kayıt biriktirmek veri minimizasyonuna aykırı. (widget.js doğrusunu yapıyor.)
+                r.visitorToken?.let { store.write(it) }
                 emit(state.copy(error = "Destek bu uygulamada şu an kullanılamıyor."))
                 return
             }
@@ -98,8 +110,33 @@ class NsuppSession(
             )
             next = apply(next, r.messages)
             emit(next)
+        } catch (e: NsuppServerException) {
+            // KALICI hata (401/403/404 — oturum geçersiz, ziyaretçi engellendi) sessiz kalamaz:
+            // döngü sonsuza kadar aynı hatayı alarak pili ve sunucuyu boşuna yakar, kullanıcı da
+            // ekranın neden donduğunu anlamaz. `stopped` çağıranın döngüsünü durdurur.
+            if (e.isPermanent) {
+                stopped = true
+                emit(state.copy(error = e.message ?: "Oturum geçersiz"))
+            }
         } catch (_: Exception) {
+            // GEÇİCİ hata SESSİZ: ağ kesintisinde ekrana hata basmak gürültüdür; gönderim hatası
+            // zaten görünür.
         }
+    }
+
+    /**
+     * Oturumu tamamen sıfırla — **kullanıcı uygulamanızdan ÇIKIŞ yaptığında çağırın.**
+     *
+     * Jetonu siler, ekrandaki her şeyi temizler ve döngünün durmasını işaretler. Bu olmadan
+     * paylaşılan bir cihazda bir sonraki kullanıcı, öncekinin sohbet geçmişini açar — jeton
+     * cihazda kalıcıdır ve kimliğe değil CİHAZA bağlıdır.
+     */
+    fun reset() {
+        stopped = true
+        store.write(null)
+        seen.clear()
+        lastTs = null
+        emit(NsuppState())
     }
 
     /** Yeni bir konu başlat (önceki konular KAPANMAZ — çoklu konuşma). */

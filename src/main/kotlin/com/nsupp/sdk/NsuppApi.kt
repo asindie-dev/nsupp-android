@@ -16,6 +16,11 @@ package com.nsupp.sdk
 data class NsuppConfig(
     val apiBase: String,
     val publicKey: String,
+    /**
+     * Sunucuya bildirilen istemci türü (`x-nsupp-sdk-platform`). React Native köprüsü bunu
+     * "react-native" yapar; başka türlü bu paketi saran katman "android" gibi görünürdü.
+     */
+    val sdkPlatform: String = "android",
 ) {
     /** Sondaki '/' kırpılır: "https://api.test//widget/..." bazı ters-proxy'lerde 404 verir. */
     val base: String get() = apiBase.trimEnd('/')
@@ -42,8 +47,16 @@ data class NsuppConversation(
     val lastAt: String? = null,
 )
 
-/** Sunucu 4xx/5xx döndü — [message] kullanıcıya gösterilecek sebeptir, kaybedilmez. */
-class NsuppServerException(message: String) : Exception(message)
+/**
+ * Sunucu 4xx/5xx döndü — [message] kullanıcıya gösterilecek sebeptir, kaybedilmez.
+ *
+ * [status] TAŞINIR: çağıranın "geçici mi kalıcı mı" ayrımını yapabilmesi için şart. Kod olmadan
+ * yoklama döngüsü 401'i de ağ kesintisi sanıp sonsuza kadar denemeye devam eder.
+ */
+class NsuppServerException(val status: Int, message: String) : Exception(message) {
+    /** Yeniden denemenin ANLAMSIZ olduğu hatalar: oturum geçersiz/engellenmiş/kayıp. */
+    val isPermanent: Boolean get() = status == 401 || status == 403 || status == 404
+}
 
 /** Ham HTTP sözleşmesi. Gerçek uygulaması Android kabuğunda (OkHttp/HttpURLConnection). */
 interface NsuppHttp {
@@ -65,12 +78,17 @@ class NsuppApi(private val config: NsuppConfig, private val http: NsuppHttp) {
     private fun url(path: String) = "${config.base}/widget/${config.publicKey}$path"
 
     private fun call(path: String, method: String, body: String?, visitorToken: String? = null): String {
-        val headers = mutableMapOf("content-type" to "application/json")
+        val headers = mutableMapOf(
+            "content-type" to "application/json",
+            // İstemciyi AÇIKÇA tanıt: alan adı kilidi TARAYICI kontrolüdür ve yerel istemci
+            // `Origin` göndermez. Sunucu bu başlığı görünce kilidi uygulamaz.
+            "x-nsupp-sdk-platform" to config.sdkPlatform,
+        )
         // OTURUM SIRRI BAŞLIKTA: query string erişim/proxy/CDN loglarına düşer ve bu jeton
         // oturumun TEK kimliğidir (ele geçiren konuşmayı okur, ziyaretçi adına yazar).
         if (visitorToken != null) headers["x-nsupp-visitor-token"] = visitorToken
         val (code, text) = http.request(url(path), method, body, headers)
-        if (code !in 200..299) throw NsuppServerException(Json.string(text, "error") ?: "HTTP $code")
+        if (code !in 200..299) throw NsuppServerException(code, Json.string(text, "error") ?: "HTTP $code")
         return text
     }
 
@@ -134,7 +152,8 @@ class NsuppApi(private val config: NsuppConfig, private val http: NsuppHttp) {
     )
 
     fun listConversations(token: String): List<NsuppConversation> {
-        val text = call("/conversations?token=${Url.encode(token)}", "GET", null)
+        // Jeton BAŞLIKTA — sorgu dizesinde DEĞİL (gerekçe `call` içinde yazılı).
+        val text = call("/conversations", "GET", null, visitorToken = token)
         val data = Json.obj(text, "data") ?: "{}"
         return Json.conversations(data, "conversations")
     }

@@ -114,7 +114,10 @@ object Nsupp {
             pendingPushToken?.let { t -> pendingPushToken = null; s.registerPushToken(t) }
             // Yoklama YALNIZ ekran açıkken. Arka planda değil: pili yakar ve Android süreci öldürür;
             // arka plan işi FCM'in işidir.
-            while (isActive) {
+            //
+            // `s.stopped` = oturum KALICI olarak bitti (401/403/404 ya da reset). Bunu okumazsak
+            // döngü sonsuza kadar aynı hatayı alarak pili ve sunucuyu boşuna yakar.
+            while (isActive && !s.stopped) {
                 delay(4_000)
                 s.pollOnce()
             }
@@ -130,6 +133,19 @@ object Nsupp {
     fun send(text: String) {
         val s = session ?: return
         scope?.launch { s.send(text) }
+    }
+
+    /**
+     * Oturumu sıfırla — **kullanıcı uygulamanızdan ÇIKIŞ yaptığında çağırın.**
+     *
+     * Jetonu siler ve yoklamayı durdurur. Bu olmadan paylaşılan bir cihazda bir sonraki kullanıcı,
+     * öncekinin sohbet geçmişini açar. Bekleyen anlık-bildirim jetonu da düşer: o jeton artık
+     * ESKİ ziyaretçiye aitti.
+     */
+    fun reset() {
+        onChatClosed()
+        pendingPushToken = null
+        session?.reset()
     }
 
     suspend fun conversations() = withContext(Dispatchers.IO) { session?.conversations() ?: emptyList() }

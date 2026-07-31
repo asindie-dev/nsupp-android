@@ -148,6 +148,66 @@ class NsuppSessionTest {
         assertEquals(0, http.istekler.size)
     }
 
+    @Test fun `cikis sonrasi jeton SILINIR ve gecmis kalmaz`() {
+        // Paylaşılan cihazda bir sonraki kullanıcı öncekinin sohbetini açmamalı.
+        val m = """{"id":"m1","senderType":"operator","body":"gizli","createdAt":"2026-01-01"}"""
+        val http = SahteHttp(mutableListOf(200 to """{"data":{"visitorToken":"vt","messages":[$m]}}"""))
+        val store = InMemoryTokenStore()
+        val s = NsuppSession(NsuppApi(cfg, http), store)
+        s.start()
+        assertEquals(1, s.state.messages.size)
+        s.reset()
+        assertNull(store.read(), "çıkışta jeton silinmedi → sonraki kullanıcı aynı oturumu açar")
+        assertEquals(0, s.state.messages.size)
+        assertTrue(s.stopped, "reset sonrası döngü durmuyor")
+    }
+
+    @Test fun `kalici hata dongu durdurur ve sebep gosterilir`() {
+        val http = SahteHttp(mutableListOf(
+            200 to """{"data":{"visitorToken":"vt","messages":[]}}""",
+            403 to """{"error":"Engellendi"}""",
+        ))
+        val s = NsuppSession(NsuppApi(cfg, http), InMemoryTokenStore())
+        s.start()
+        s.pollOnce()
+        assertTrue(s.stopped, "403 sonrası döngü durmadı → sonsuza kadar aynı hatayı alır")
+        assertEquals("Engellendi", s.state.error)
+    }
+
+    @Test fun `gecici hata dongu DURDURMAZ`() {
+        val http = SahteHttp(mutableListOf(
+            200 to """{"data":{"visitorToken":"vt","messages":[]}}""",
+            503 to "{}",
+        ))
+        val s = NsuppSession(NsuppApi(cfg, http), InMemoryTokenStore())
+        s.start()
+        s.pollOnce()
+        assertTrue(!s.stopped, "tek bir 503 sohbeti kalıcı olarak öldürdü")
+        assertNull(s.state.error)
+    }
+
+    @Test fun `kisitli oturumda da jeton SAKLANIR`() {
+        // Saklamazsak her açılış YENİ ziyaretçi satırı + IP/coğrafya üretir (veri minimizasyonu).
+        val http = SahteHttp(mutableListOf(200 to """{"data":{"restricted":true,"visitorToken":"vt_k"}}"""))
+        val store = InMemoryTokenStore()
+        NsuppSession(NsuppApi(cfg, http), store).start()
+        assertEquals("vt_k", store.read())
+    }
+
+    @Test fun `konusma listesi jetonu BASLIKTA gonderir`() {
+        val http = SahteHttp(mutableListOf(200 to """{"data":{"conversations":[]}}"""))
+        NsuppApi(cfg, http).listConversations("vt_gizli")
+        val (url, _, headers) = http.istekler[0]
+        assertEquals("vt_gizli", headers["x-nsupp-visitor-token"])
+        assertTrue(!url.contains("vt_gizli"), "oturum jetonu URL'ye SIZDI: $url")
+    }
+
+    @Test fun `her istek SDK platformunu bildirir (alan adi kilidi tarayici kontrolu)`() {
+        val http = SahteHttp(mutableListOf(200 to """{"data":{}}"""))
+        NsuppApi(cfg, http).openSession(null)
+        assertEquals("android", http.istekler[0].third["x-nsupp-sdk-platform"])
+    }
+
     @Test fun `yoklama hatasi durumu bozmaz`() {
         val http = SahteHttp(mutableListOf(200 to """{"data":{"visitorToken":"vt","messages":[]}}""", 500 to "{}"))
         val s = NsuppSession(NsuppApi(cfg, http), InMemoryTokenStore())
