@@ -63,6 +63,7 @@ internal object Json {
     /** Tek mesaj nesnesi (ham `{…}` gövdesi). Kimliği yoksa mesaj sayılmaz → null. */
     fun message(o: String): NsuppMessage? {
         val id = string(o, "id") ?: return null
+        val icerik = obj(o, "content")?.let { "{$it}" }
         return NsuppMessage(
             id = id,
             senderType = string(o, "senderType") ?: "operator",
@@ -70,6 +71,17 @@ internal object Json {
             body = string(o, "body") ?: "",
             createdAt = string(o, "createdAt") ?: "",
             translatedBody = string(o, "translatedBody"),
+            attachments = items(arr(o, "attachments")).mapNotNull { a ->
+                val tur = string(a, "type") ?: return@mapNotNull null
+                NsuppAttachment(tur, string(a, "url"), string(a, "previewUrl"), string(a, "name"))
+            },
+            contentType = icerik?.let { string(it, "type") },
+            pickerChoices = if (icerik != null && string(icerik, "type") == "picker")
+                items(arr(icerik, "choices")).mapNotNull { ch ->
+                    val etiket = string(ch, "label") ?: string(ch, "value") ?: return@mapNotNull null
+                    NsuppPickerChoice(etiket, string(ch, "value"), bool(ch, "selected") ?: false)
+                }
+            else emptyList(),
         )
     }
 

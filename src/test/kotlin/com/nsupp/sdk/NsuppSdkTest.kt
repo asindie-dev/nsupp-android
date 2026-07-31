@@ -231,6 +231,46 @@ class NsuppSessionTest {
         assertTrue(!s.setSessionData(mapOf("plan" to "pro")), "çıkıştan sonra ESKİ kimlik hâlâ kullanıldı")
     }
 
+    @Test fun `ek ve bot secimi cozulur (bos balon uretilmez)`() {
+        val o = """{"id":"m1","senderType":"operator","body":"","createdAt":"t",
+          "attachments":[{"type":"image","url":"https://x/y.png","name":"fis.png"}],
+          "content":{"type":"picker","choices":[{"label":"Evet","value":"y"},{"label":"Hayır","selected":true}]}}"""
+        val m = Json.message(o)!!
+        assertEquals(1, m.attachments.size)
+        assertEquals("fis.png", m.attachments[0].name)
+        assertEquals(2, m.pickerChoices.size)
+        assertEquals("Evet", m.pickerChoices[0].replyText)
+        assertTrue(m.pickerChoices[1].selected)
+        assertTrue(!m.isEmptyBubble, "ek+seçim varken balon boş sayıldı")
+    }
+
+    @Test fun `tanimadigimiz icerik turunde balon BOS olarak isaretlenir`() {
+        val m = Json.message("""{"id":"m2","senderType":"operator","body":"","createdAt":"t","content":{"type":"carousel"}}""")!!
+        assertEquals("carousel", m.contentType)
+        assertTrue(m.isEmptyBubble, "arayüz yer tutucu gösteremez")
+    }
+
+    @Test fun `metinler cihaz dilini izler`() {
+        NsuppTexts.dilKodu = "en"
+        assertEquals("Type your message…", NsuppTexts.composerPlaceholder)
+        NsuppTexts.dilKodu = "tr"
+        assertEquals("Mesajınızı yazın…", NsuppTexts.composerPlaceholder)
+        NsuppTexts.dilKodu = null
+    }
+
+    @Test fun `CSAT bayragi okunur ve puanlama bayragi dusurur`() {
+        val http = SahteHttp(mutableListOf(
+            200 to """{"data":{"visitorToken":"vt","conversation":{"id":"c1"},"messages":[],"pendingRating":true}}""",
+            200 to """{"data":{"ok":true}}""",
+        ))
+        val s = NsuppSession(NsuppApi(cfg, http), InMemoryTokenStore())
+        s.start()
+        assertTrue(s.state.pendingRating, "pendingRating okunmadı → mobil kanal CSAT dışında kalır")
+        assertTrue(s.rate(5, "harika"))
+        assertTrue(!s.state.pendingRating, "puanlamadan sonra tekrar sorulur")
+        assertTrue(http.songovde!!.contains("\"score\":5"), http.songovde!!)
+    }
+
     @Test fun `bos mesaj gonderilmez`() {
         val http = SahteHttp(mutableListOf())
         NsuppSession(NsuppApi(cfg, http), InMemoryTokenStore("vt")).send("   ")

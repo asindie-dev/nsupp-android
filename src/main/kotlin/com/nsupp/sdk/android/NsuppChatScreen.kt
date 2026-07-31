@@ -23,6 +23,7 @@ import androidx.compose.material3.Divider
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -37,6 +38,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.shape.RoundedCornerShape
 import com.nsupp.sdk.NsuppState
+import com.nsupp.sdk.NsuppTexts
 
 /**
  * Gömülebilir sohbet ekranı (Compose).
@@ -90,8 +92,34 @@ fun NsuppChatScreen(modifier: Modifier = Modifier) {
                             )
                             .padding(horizontal = 12.dp, vertical = 8.dp)
                     ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         // ÇEVİRİ VARSA O GÖSTERİLİR — orijinal `m.body` erişilebilir kalır.
-                        Text(m.displayBody, style = MaterialTheme.typography.bodyMedium)
+                        if (m.displayBody.isNotBlank()) {
+                            Text(m.displayBody, style = MaterialTheme.typography.bodyMedium)
+                        }
+                        // EKLER: eskiden hiç okunmuyordu → ek-yalnız mesaj boş balondu.
+                        m.attachments.forEach { a ->
+                            Text(
+                                (if (a.type == "image") "🖼 " else "📎 ") + (a.name ?: a.type),
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                        }
+                        // BOT SEÇİMİ: dokunulabilir şıklar. Seçim NORMAL mesaj olarak gider —
+                        // widget ile aynı kural, ayrı bir "cevap" protokolü icat etmiyoruz.
+                        m.pickerChoices.forEach { ch ->
+                            TextButton(onClick = { Nsupp.send(ch.replyText) }, enabled = !ch.selected) {
+                                Text(ch.label)
+                            }
+                        }
+                        if (m.isEmptyBubble) {
+                            // Tanımadığımız içerik türü: boş balon çizmek yerine ne olduğunu
+                            // söyleriz — sessiz boşluk teşhis edilemez.
+                            Text(
+                                NsuppTexts.unsupportedMessage,
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        }
+                    }
                     }
                 }
             }
@@ -100,12 +128,22 @@ fun NsuppChatScreen(modifier: Modifier = Modifier) {
             }
         }
         Divider()
+        if (state.pendingRating) {
+            // CSAT: konuşma çözüldü ve puan bekleniyor. Sormazsak mobil kanal memnuniyet ölçümünün
+            // TAMAMEN dışında kalır (web'de sorulur, mobilde sorulmazdı).
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(NsuppTexts.ratePrompt, style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.weight(1f))
+                (1..5).forEach { p -> TextButton(onClick = { Nsupp.rate(p) }) { Text("$p") } }
+            }
+            Divider()
+        }
         Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
             TextField(
                 value = draft,
                 onValueChange = { draft = it },
                 modifier = Modifier.weight(1f),
-                placeholder = { Text("Mesajınızı yazın…") },
+                placeholder = { Text(NsuppTexts.composerPlaceholder) },
                 maxLines = 4,
             )
             Spacer(Modifier.width(8.dp))

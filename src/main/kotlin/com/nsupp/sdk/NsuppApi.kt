@@ -26,6 +26,25 @@ data class NsuppConfig(
     val base: String get() = apiBase.trimEnd('/')
 }
 
+/** Mesaj eki (görsel, dosya, ses…). Sunucu DTO'suyla aynı alanlar. */
+data class NsuppAttachment(
+    /** `image` / `video` / `audio` / `file` / `sticker` / `share` / `location` / `unknown`. */
+    val type: String,
+    val url: String? = null,
+    val previewUrl: String? = null,
+    val name: String? = null,
+)
+
+/** Bot'un sunduğu tek-seçimlik şık (Crisp message-type: picker). */
+data class NsuppPickerChoice(
+    val label: String,
+    val value: String? = null,
+    val selected: Boolean = false,
+) {
+    /** Seçildiğinde gönderilecek metin — widget ile AYNI kural (önce etiket, yoksa değer). */
+    val replyText: String get() = if (label.isEmpty()) (value ?: "") else label
+}
+
 data class NsuppMessage(
     val id: String,
     val senderType: String,
@@ -34,10 +53,23 @@ data class NsuppMessage(
     val createdAt: String,
     /** LiveTranslate çevirisi; yoksa null → [body] gösterilir. */
     val translatedBody: String? = null,
+    /** Ekler. Eskiden hiç okunmuyordu → ek-yalnız mesaj BOŞ balon olarak çiziliyordu. */
+    val attachments: List<NsuppAttachment> = emptyList(),
+    /**
+     * Zengin içerik türü (`picker`/`field`/`carousel`/`call`) — yoksa null. Şimdilik YALNIZ
+     * `picker` modellenir; diğerlerinde arayüz gövdeye düşer: tanımadığı bir şeyi çizmiş gibi
+     * yapmaktansa metni göstermek dürüsttür.
+     */
+    val contentType: String? = null,
+    val pickerChoices: List<NsuppPickerChoice> = emptyList(),
 ) {
     /** Gösterilecek metin: çeviri varsa o. ORİJİNAL KAYBOLMAZ — [body] erişilebilir kalır. */
     val displayBody: String get() = translatedBody ?: body
     val isFromVisitor: Boolean get() = senderType == "visitor"
+
+    /** Balon gerçekten boş mu — hiçbir şey çizilemiyorsa arayüz nötr bir yer tutucu gösterir. */
+    val isEmptyBubble: Boolean
+        get() = displayBody.isBlank() && attachments.isEmpty() && pickerChoices.isEmpty()
 }
 
 data class NsuppConversation(
@@ -104,6 +136,7 @@ class NsuppApi(private val config: NsuppConfig, private val http: NsuppHttp) {
             // der ama mesajları yüklemiştir — durum kendi kendine yalan söyler.
             conversationId = Json.obj(data, "conversation")?.let { Json.string("{$it}", "id") },
             messages = Json.messages(data, "messages"),
+            pendingRating = Json.bool(data, "pendingRating") ?: false,
         )
     }
 
@@ -112,6 +145,11 @@ class NsuppApi(private val config: NsuppConfig, private val http: NsuppHttp) {
         val restricted: Boolean,
         val conversationId: String?,
         val messages: List<NsuppMessage>,
+        /**
+         * Konuşma çözüldü ve HENÜZ puanlanmadı → arayüz CSAT sorar. Okumazsak mobil kanal
+         * memnuniyet ölçümünün TAMAMEN dışında kalır.
+         */
+        val pendingRating: Boolean = false,
     )
 
     /**
@@ -154,6 +192,7 @@ class NsuppApi(private val config: NsuppConfig, private val http: NsuppHttp) {
             operatorTyping = Json.bool(data, "operatorTyping") ?: false,
             operatorsOnline = Json.bool(data, "operatorsOnline"),
             messages = Json.messages(data, "messages"),
+            pendingRating = Json.bool(data, "pendingRating") ?: false,
         )
     }
 
@@ -162,6 +201,7 @@ class NsuppApi(private val config: NsuppConfig, private val http: NsuppHttp) {
         val operatorTyping: Boolean,
         val operatorsOnline: Boolean?,
         val messages: List<NsuppMessage>,
+        val pendingRating: Boolean = false,
     )
 
     fun listConversations(token: String): List<NsuppConversation> {
@@ -212,6 +252,14 @@ class NsuppApi(private val config: NsuppConfig, private val http: NsuppHttp) {
     /** Özel olay bildir (kampanya/tetikleyici koşulları + kişi zaman-çizelgesi). */
     fun trackEvent(token: String, name: String) {
         call("/event", "POST", """{"token":${Json.quote(token)},"kind":"event","name":${Json.quote(name)}}""")
+    }
+
+    /** Konuşmayı puanla (CSAT). [score] 1–5; sunucu aralık dışını reddeder. */
+    fun rate(token: String, conversationId: String, score: Int, comment: String?) {
+        val sb = StringBuilder("""{"token":${Json.quote(token)},"conversationId":${Json.quote(conversationId)},"score":$score""")
+        if (!comment.isNullOrBlank()) sb.append(""","comment":${Json.quote(comment)}""")
+        sb.append("}")
+        call("/rating", "POST", sb.toString())
     }
 
     /** Bir mesaj tetikleyicisini çalıştır (Crisp'in `runBotScenario` karşılığı). */

@@ -38,6 +38,8 @@ data class NsuppState(
      * Entegrasyonu kuran geliştirici "neden doğrulanmadı"yı buradan görür.
      */
     val identityStatus: String? = null,
+    /** Konuşma çözüldü ve puan bekliyor → arayüz CSAT sorar. */
+    val pendingRating: Boolean = false,
 )
 
 class NsuppSession(
@@ -98,15 +100,15 @@ class NsuppSession(
                 // (ve onunla IP/coğrafya kaydı) üretir — kısıtlanmış bir ziyaretçi için sınırsız
                 // kayıt biriktirmek veri minimizasyonuna aykırı. (widget.js doğrusunu yapıyor.)
                 r.visitorToken?.let { store.write(it) }
-                emit(state.copy(error = "Destek bu uygulamada şu an kullanılamıyor."))
+                emit(state.copy(error = NsuppTexts.restricted))
                 return
             }
             r.visitorToken?.let { store.write(it) }
-            emit(apply(state.copy(error = null, conversationId = r.conversationId), r.messages, advanceCursor = true))
+            emit(apply(state.copy(error = null, conversationId = r.conversationId, pendingRating = r.pendingRating), r.messages, advanceCursor = true))
             // Oturumdan ÖNCE verilen kimlik şimdi gönderilir (yoksa müşteri anonim kalırdı).
             bekleyenKimlik?.let { k -> bekleyenKimlik = null; gonderKimlik(k) }
         } catch (e: Exception) {
-            emit(state.copy(error = e.message ?: "Bağlantı kurulamadı"))
+            emit(state.copy(error = e.message ?: NsuppTexts.connectFailed))
         }
     }
 
@@ -128,7 +130,7 @@ class NsuppSession(
             emit(next)
             true
         } catch (e: Exception) {
-            emit(state.copy(error = e.message ?: "Mesaj gönderilemedi"))
+            emit(state.copy(error = e.message ?: NsuppTexts.sendFailed))
             false
         }
     }
@@ -148,6 +150,7 @@ class NsuppSession(
                 conversationId = r.conversationId ?: state.conversationId,
                 operatorTyping = r.operatorTyping,
                 operatorsOnline = r.operatorsOnline ?: state.operatorsOnline,
+                pendingRating = r.pendingRating,
             )
             next = apply(next, r.messages, advanceCursor = true)
             emit(next)
@@ -204,7 +207,7 @@ class NsuppSession(
     fun setSessionData(attributes: Map<String, Any?>): Boolean {
         bekleyenKimlik?.let { it.attributes.putAll(attributes); return true }
         val email = kimlikEmail ?: run {
-            emit(state.copy(error = "Öznitelik yazmadan önce identify(email) çağırın."))
+            emit(state.copy(error = NsuppTexts.identifyFirst))
             return false
         }
         return gonderKimlik(Kimlik(email, null, kimlikImza, attributes.toMutableMap()))
@@ -224,6 +227,23 @@ class NsuppSession(
     fun trackEvent(name: String): Boolean {
         val token = store.read() ?: return false
         return try { api.trackEvent(token, name); true } catch (_: Exception) { false }
+    }
+
+    /**
+     * Konuşmayı puanla (CSAT, 1–5). [NsuppState.pendingRating] true iken sorulur.
+     * Başarılıysa bayrak düşer — aynı konuşma ikinci kez sorulmaz.
+     */
+    fun rate(score: Int, comment: String? = null): Boolean {
+        val token = store.read() ?: return false
+        val conv = state.conversationId ?: return false
+        return try {
+            api.rate(token, conv, score, comment)
+            emit(state.copy(pendingRating = false))
+            true
+        } catch (e: Exception) {
+            emit(state.copy(error = e.message))
+            false
+        }
     }
 
     /** Bir mesaj tetikleyicisini çalıştır (Crisp'in `runBotScenario` karşılığı). */

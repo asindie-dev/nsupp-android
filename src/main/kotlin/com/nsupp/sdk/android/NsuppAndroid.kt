@@ -181,6 +181,12 @@ object Nsupp {
         scope?.launch { s.trackEvent(name) }
     }
 
+    /** Konuşmayı puanla (CSAT, 1–5). `NsuppState.pendingRating` true iken sorulur. */
+    fun rate(score: Int, comment: String? = null) {
+        val s = session ?: return
+        scope?.launch { s.rate(score, comment) }
+    }
+
     /** Bir mesaj tetikleyicisini çalıştır (Crisp'in `runBotScenario` karşılığı). */
     fun runTrigger(identifier: String) {
         val s = session ?: return
