@@ -127,17 +127,47 @@ internal object Json {
 
     // ── iç ──
 
-    /** `"key"` sonrası ':' konumunu bulur — YALNIZ dize dışında (değer içindeki eş metin sayılmaz). */
+    /**
+     * `"key"` sonrası ':' konumunu bulur.
+     *
+     * 🔴 YALNIZ ÜST SEVİYE: eskiden metinde geçen İLK eşleşme alınıyordu. `/session` yanıtında
+     * `config` (içinde 98 metin anahtarı taşıyan `texts`) `messages`ten ÖNCE geliyor — orada
+     * çakışan tek bir anahtar adı, üst seviyedeki gerçek alanı gölgeler ve mesaj listesi SESSİZCE
+     * boş döner. Bu yüzden derinlik izlenir; iç içe nesne/dizi içindeki eşleşmeler atlanır.
+     *
+     * Dize İÇİNDEKİ eşleşmeler de sayılmaz (kaçış takibiyle).
+     */
     private fun indexOfKey(src: String, key: String): Int? {
         val needle = "\"$key\""
-        var from = 0
-        while (true) {
-            val i = src.indexOf(needle, from)
-            if (i < 0) return null
-            val after = skipWs(src, i + needle.length)
-            if (after < src.length && src[after] == ':') return after + 1
-            from = i + needle.length
+        // Girdi ya tam bir belge (`{…}`) ya da açılmış gövde olabilir (obj() içeriği döner).
+        // Üst seviye ilkinde derinlik 1, ikincisinde 0'dır.
+        val hedefDerinlik = if (src.trimStart().startsWith("{")) 1 else 0
+        var depth = 0
+        var i = 0
+        var inStr = false
+        var esc = false
+        while (i < src.length) {
+            val c = src[i]
+            if (esc) { esc = false; i++; continue }
+            if (inStr) {
+                if (c == '\\') esc = true
+                else if (c == '"') inStr = false
+                i++; continue
+            }
+            when (c) {
+                '{', '[' -> depth++
+                '}', ']' -> depth--
+                '"' -> {
+                    if (depth == hedefDerinlik && src.startsWith(needle, i)) {
+                        val after = skipWs(src, i + needle.length)
+                        if (after < src.length && src[after] == ':') return after + 1
+                    }
+                    inStr = true
+                }
+            }
+            i++
         }
+        return null
     }
 
     private fun skipWs(src: String, from: Int): Int {

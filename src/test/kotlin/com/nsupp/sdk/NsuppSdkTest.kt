@@ -29,6 +29,19 @@ class JsonTest {
         assertEquals("gercek", Json.string(s, "id"))
     }
 
+    @Test fun `ic ice ayni adli anahtar UST SEVIYEYI golgelemez`() {
+        // /session yanıtında `config.widgetConfig.texts` 98 anahtar taşıyor ve `messages`ten ÖNCE
+        // geliyor. Çakışan tek bir ad, mesaj listesini sessizce boşaltırdı.
+        val s = """{"config":{"texts":{"messages":"Mesajlar"}},"messages":[{"id":"m1"}]}"""
+        assertEquals(1, Json.messages(s, "messages").size)
+        assertEquals("Mesajlar", Json.string(Json.obj(Json.obj(s, "config")?.let { "{$it}" } ?: "{}", "texts")?.let { "{$it}" } ?: "{}", "messages"))
+    }
+
+    @Test fun `ic ice conversation id ust seviyeyi golgelemez`() {
+        val s = """{"config":{"conversation":{"id":"YANLIS"}},"conversation":{"id":"DOGRU"}}"""
+        assertEquals("DOGRU", Json.obj(s, "conversation")?.let { Json.string("{$it}", "id") })
+    }
+
     @Test fun `null deger null doner`() = assertNull(Json.string("""{"senderName":null}""", "senderName"))
 
     @Test fun `ic ice nesne butun halinde alinir`() {
@@ -121,25 +134,72 @@ class NsuppSessionTest {
         assertEquals(1, s.state.messages.size)
     }
 
+    @Test fun `kendi mesajim imleci ILERLETMEZ (operator mesaji kaybolmaz)`() {
+        // Senaryo: operatör T1'de yazar; ziyaretçi yoklamadan ÖNCE T2 > T1'de yazar. İmleç kendi
+        // mesajımızla ilerlerse sonraki yoklama after=T2 der ve operatörün T1 mesajı SONSUZA KADAR
+        // atlanır. Bu test o kaybı üretir.
+        val http = SahteHttp(mutableListOf(
+            200 to """{"data":{"visitorToken":"vt","messages":[]}}""",
+            // ziyaretçinin T2'deki gönderimi
+            200 to """{"data":{"conversationId":"c1","message":{"id":"mine","senderType":"visitor","body":"ben","createdAt":"2026-01-01T00:00:02Z"}}}""",
+            200 to """{"data":{"messages":[]}}""",
+        ))
+        val s = NsuppSession(NsuppApi(cfg, http), InMemoryTokenStore())
+        s.start()
+        s.send("ben")
+        s.pollOnce()
+        // Yoklama URL'inde `after` HİÇ olmamalı (imleç hâlâ boş) — varsa T1 mesajı elenirdi.
+        val pollUrl = http.istekler.last().first
+        assertTrue(!pollUrl.contains("after="), "kendi mesajım imleci ilerletti → operatör mesajı kaybolur: $pollUrl")
+    }
+
+    @Test fun `yoklama open ve mobile bayraklarini gonderir`() {
+        val http = SahteHttp(mutableListOf(200 to """{"data":{"messages":[]}}"""))
+        NsuppApi(cfg, http).poll("vt", null, null)
+        val url = http.istekler[0].first
+        // Bunlar olmadan okundu makbuzu (✓✓), kapanmış-sohbet penceresi ve mobil-tetikleyici
+        // ayrımı mobilde HİÇ işlemez.
+        assertTrue(url.contains("open=1"), "open=1 yok: $url")
+        assertTrue(url.contains("mobile=1"), "mobile=1 yok: $url")
+    }
+
+    @Test fun `yeni konu bayragi GONDERIME islenir ve beklerken yoklama DURAKLAR`() {
+        val http = SahteHttp(mutableListOf(
+            200 to """{"data":{"visitorToken":"vt","conversation":{"id":"eski"},"messages":[]}}""",
+            200 to """{"data":{"conversationId":"yeni","message":{"id":"m9","senderType":"visitor","body":"iade","createdAt":"t"}}}""",
+        ))
+        val s = NsuppSession(NsuppApi(cfg, http), InMemoryTokenStore())
+        s.start()
+        assertEquals("eski", s.state.conversationId)
+
+        s.startNewConversation()
+        val oncekiIstekSayisi = http.istekler.size
+        s.pollOnce()
+        assertEquals(oncekiIstekSayisi, http.istekler.size, "yeni konu beklerken yoklandı → eski mesajlar geri gelir")
+
+        s.send("iade")
+        assertTrue(http.songovde!!.contains("\"newConversation\":true"), "yeni konu bayrağı gönderilmedi → mesaj ESKİ konuşmaya düşer")
+        assertEquals("yeni", s.state.conversationId)
+    }
+
     @Test fun `bos mesaj gonderilmez`() {
         val http = SahteHttp(mutableListOf())
         NsuppSession(NsuppApi(cfg, http), InMemoryTokenStore("vt")).send("   ")
         assertEquals(0, http.istekler.size)
     }
 
-    @Test fun `yeni konusma imleci sifirlar ve eski mesaj geri gelmez`() {
+    @Test fun `yeni konusma EKRANI temizler ve eski konudan ayrilir`() {
+        // NOT: bu test eskiden "sıfırlanan imleçle aynı mesaj yeniden görünür" diyordu. O davranış
+        // YANLIŞTI: yeni konu isteyen ziyaretçiye eski konunun mesajlarını geri getiriyordu.
+        // Bekleme sırasında yoklamanın durakladığı ve bayrağın gönderime işlendiği ayrı testte.
         val m1 = """{"id":"m1","senderType":"operator","body":"a","createdAt":"2026-01-01"}"""
-        val http = SahteHttp(mutableListOf(
-            200 to """{"data":{"visitorToken":"vt","messages":[$m1]}}""",
-            200 to """{"data":{"messages":[$m1]}}""",
-        ))
+        val http = SahteHttp(mutableListOf(200 to """{"data":{"visitorToken":"vt","conversation":{"id":"c1"},"messages":[$m1]}}"""))
         val s = NsuppSession(NsuppApi(cfg, http), InMemoryTokenStore())
         s.start()
+        assertEquals(1, s.state.messages.size)
         s.startNewConversation()
         assertEquals(0, s.state.messages.size)
         assertNull(s.state.conversationId)
-        s.pollOnce() // imleç sıfırlandığı için aynı mesaj YENİDEN görünebilir olmalı
-        assertEquals(1, s.state.messages.size)
     }
 
     @Test fun `ziyaretci yokken cihaz kaydi yapilmaz`() {

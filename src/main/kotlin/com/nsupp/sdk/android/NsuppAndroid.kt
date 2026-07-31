@@ -94,7 +94,11 @@ object Nsupp {
         val cfg = NsuppConfig(apiBase, publicKey)
         val s = NsuppSession(NsuppApi(cfg, AndroidHttp()), PrefsTokenStore(context, publicKey))
         session = s
-        scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        // 🔴 TEK İŞ PARÇACIĞI: NsuppSession'ın durumu (state/seen/lastTs) korumasız alanlar — saf
+        // Kotlin olması için bilinçli bir tercih. Çok-iş-parçacıklı bir IO havuzunda `send` ile
+        // `pollOnce` çakışırsa mesaj kaybı ve bozuk imleç üretir. `limitedParallelism(1)` çekirdeği
+        // seri tutar; iOS tarafında aynı güvenceyi `@MainActor` zaten sağlıyor.
+        scope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1))
     }
 
     /**
@@ -130,9 +134,16 @@ object Nsupp {
         pollJob = null
     }
 
-    fun send(text: String) {
+    /**
+     * Mesaj gönder. [onResult] ANA İŞ PARÇACIĞINDA çağrılır; `false` gelirse arayüz kullanıcının
+     * yazdığı metni geri koyar — aksi halde ağ hatasında yazılan mesaj buharlaşır.
+     */
+    fun send(text: String, onResult: ((Boolean) -> Unit)? = null) {
         val s = session ?: return
-        scope?.launch { s.send(text) }
+        scope?.launch {
+            val ok = s.send(text)
+            if (onResult != null) mainHandler.post { onResult(ok) }
+        }
     }
 
     /**

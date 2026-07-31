@@ -114,10 +114,16 @@ class NsuppApi(private val config: NsuppConfig, private val http: NsuppHttp) {
         val messages: List<NsuppMessage>,
     )
 
-    /** Mesaj gönder. [conversationId] verilirse O konuya yazılır (çoklu konuşma). */
-    fun sendMessage(token: String, text: String, conversationId: String?): SendResult {
+    /**
+     * Mesaj gönder. [conversationId] verilirse O konuya yazılır (çoklu konuşma).
+     *
+     * [newConversation] = ziyaretçi AÇIKÇA yeni bir konu açtı. Bu bayrak olmadan sunucu açık
+     * konuşmayı yeniden kullanır ve "yeni konu" isteği sessizce eski akışa gömülürdü.
+     */
+    fun sendMessage(token: String, text: String, conversationId: String?, newConversation: Boolean = false): SendResult {
         val sb = StringBuilder("""{"token":${Json.quote(token)},"body":${Json.quote(text)}""")
         if (conversationId != null) sb.append(""","conversationId":${Json.quote(conversationId)}""")
+        if (newConversation) sb.append(""","newConversation":true""")
         sb.append("}")
         val res = call("/messages", "POST", sb.toString())
         val data = Json.obj(res, "data") ?: "{}"
@@ -129,11 +135,18 @@ class NsuppApi(private val config: NsuppConfig, private val http: NsuppHttp) {
 
     data class SendResult(val conversationId: String?, val message: NsuppMessage?)
 
-    /** Yeni mesajları çek. [after] verilirse yalnız ondan sonrakiler. */
+    /**
+     * Yeni mesajları çek. [after] verilirse yalnız ondan sonrakiler.
+     *
+     * `open=1&mobile=1` HER ZAMAN gider ve bu DOĞRUDUR: yoklama yalnız sohbet ekranı açıkken
+     * çalışır (kapanınca durur), istemci de her zaman mobil. Bunları göndermezsek sunucudaki üç
+     * davranış mobilde HİÇ işlemez: okundu makbuzu (✓✓), kapanmış-sohbet okuma penceresi ve
+     * mobil-tetikleyici ayrımı.
+     */
     fun poll(token: String, conversationId: String?, after: String?): PollResult {
-        val q = StringBuilder("/messages?")
-        if (conversationId != null) q.append("conversationId=").append(Url.encode(conversationId)).append('&')
-        if (after != null) q.append("after=").append(Url.encode(after)).append('&')
+        val q = StringBuilder("/messages?open=1&mobile=1")
+        if (conversationId != null) q.append("&conversationId=").append(Url.encode(conversationId))
+        if (after != null) q.append("&after=").append(Url.encode(after))
         val text = call(q.toString(), "GET", null, visitorToken = token)
         val data = Json.obj(text, "data") ?: "{}"
         return PollResult(

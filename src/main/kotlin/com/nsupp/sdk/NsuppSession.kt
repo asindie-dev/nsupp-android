@@ -56,6 +56,12 @@ class NsuppSession(
     var stopped: Boolean = false
         private set
 
+    /**
+     * [startNewConversation] çağrıldı ve HENÜZ mesaj gönderilmedi. Bir sonraki gönderim sunucuya
+     * "yeni konu" bayrağını taşır; taşımazsak mesaj eski konuşmaya düşerdi.
+     */
+    private var yeniKonuBekliyor = false
+
     val visitorToken: String? get() = store.read()
 
     /** Oturumu aç (ilk açılışta ziyaretçi üretilir) ve geçmişi yükle. */
@@ -74,24 +80,32 @@ class NsuppSession(
                 return
             }
             r.visitorToken?.let { store.write(it) }
-            emit(apply(state.copy(error = null, conversationId = r.conversationId), r.messages))
+            emit(apply(state.copy(error = null, conversationId = r.conversationId), r.messages, advanceCursor = true))
         } catch (e: Exception) {
             emit(state.copy(error = e.message ?: "Bağlantı kurulamadı"))
         }
     }
 
-    /** Mesaj gönder. Boş/boşluk metin GÖNDERİLMEZ (sunucu da reddeder; kullanıcıyı bekletme). */
-    fun send(text: String) {
+    /**
+     * Mesaj gönder. Boş/boşluk metin GÖNDERİLMEZ (sunucu da reddeder; kullanıcıyı bekletme).
+     *
+     * @return gönderim başarılıysa true. Arayüz bunu okuyup BAŞARISIZSA yazılan metni geri koyar —
+     *   aksi halde ağ hatasında kullanıcının yazdığı mesaj buharlaşır ve yeniden yazması gerekir.
+     */
+    fun send(text: String): Boolean {
         val clean = text.trim()
         val token = store.read()
-        if (clean.isEmpty() || token == null) return
-        try {
-            val r = api.sendMessage(token, clean, state.conversationId)
+        if (clean.isEmpty() || token == null) return false
+        return try {
+            val r = api.sendMessage(token, clean, state.conversationId, newConversation = yeniKonuBekliyor)
+            yeniKonuBekliyor = false
             var next = state.copy(error = null, conversationId = r.conversationId ?: state.conversationId)
-            if (r.message != null) next = apply(next, listOf(r.message))
+            if (r.message != null) next = apply(next, listOf(r.message), advanceCursor = false)
             emit(next)
+            true
         } catch (e: Exception) {
             emit(state.copy(error = e.message ?: "Mesaj gönderilemedi"))
+            false
         }
     }
 
@@ -101,6 +115,9 @@ class NsuppSession(
      */
     fun pollOnce() {
         val token = store.read() ?: return
+        // "Yeni konu" bayrağı beklerken yoklama YAPILMAZ: `conversationId` yokken sunucu AÇIK
+        // konuşmayı döndürür ve az önce temizlediğimiz eski mesajları geri getirirdi.
+        if (yeniKonuBekliyor) return
         try {
             val r = api.poll(token, state.conversationId, lastTs)
             var next = state.copy(
@@ -108,7 +125,7 @@ class NsuppSession(
                 operatorTyping = r.operatorTyping,
                 operatorsOnline = r.operatorsOnline ?: state.operatorsOnline,
             )
-            next = apply(next, r.messages)
+            next = apply(next, r.messages, advanceCursor = true)
             emit(next)
         } catch (e: NsuppServerException) {
             // KALICI hata (401/403/404 — oturum geçersiz, ziyaretçi engellendi) sessiz kalamaz:
@@ -139,8 +156,17 @@ class NsuppSession(
         emit(NsuppState())
     }
 
-    /** Yeni bir konu başlat (önceki konular KAPANMAZ — çoklu konuşma). */
+    /**
+     * Yeni bir konu başlat (önceki konular KAPANMAZ — çoklu konuşma).
+     *
+     * Konuşma İLK MESAJLA doğar: bu çağrı ekranı temizler ve bir sonraki gönderime "yeni konu"
+     * bayrağını iliştirir. Boş bir konuşma satırı üretip operatörün gelen kutusunu kirletmeyiz.
+     *
+     * ⚠️ Bayrak beklerken yoklama DURAKLAR ([pollOnce] erken döner): `conversationId` yokken sunucu
+     * "konuşma yok" sorusuna AÇIK konuşmayı döndürür — yani temizlenen eski mesajlar geri gelirdi.
+     */
     fun startNewConversation() {
+        yeniKonuBekliyor = true
         seen.clear(); lastTs = null
         emit(state.copy(messages = emptyList(), conversationId = null, error = null))
     }
@@ -148,6 +174,8 @@ class NsuppSession(
     /** Var olan bir konuya geç. */
     fun openConversation(id: String) {
         if (id == state.conversationId) return
+        // Bekleyen "yeni konu" isteği iptal: kullanıcı fikrini değiştirip var olan bir konuyu açtı.
+        yeniKonuBekliyor = false
         seen.clear(); lastTs = null
         emit(state.copy(messages = emptyList(), conversationId = id, error = null))
     }
@@ -168,13 +196,20 @@ class NsuppSession(
 
     // ── iç ──
 
-    private fun apply(base: NsuppState, incoming: List<NsuppMessage>): NsuppState {
+    /**
+     * 🔴 [advanceCursor] NEDEN VAR: imleç ([lastTs]) YALNIZ sunucudan LİSTE olarak gelen mesajlarla
+     * ilerler. Kendi gönderdiğimiz mesajla ilerletirsek şu senaryo mesaj KAYBEDER: operatör T1'de
+     * yazar, ziyaretçi yoklamadan önce T2 > T1'de yazar, imleç T2 olur, sonraki yoklama `after=T2`
+     * der ve operatörün T1 mesajı sonsuza kadar ATLANIR. Kendi mesajımızı sonraki yoklamada tekrar
+     * görmek zararsızdır — [seen] zaten tekilliyor.
+     */
+    private fun apply(base: NsuppState, incoming: List<NsuppMessage>, advanceCursor: Boolean): NsuppState {
         if (incoming.isEmpty()) return base
         val list = base.messages.toMutableList()
         for (m in incoming) {
             if (!seen.add(m.id)) continue
             list.add(m)
-            if (lastTs == null || m.createdAt > lastTs!!) lastTs = m.createdAt
+            if (advanceCursor && (lastTs == null || m.createdAt > lastTs!!)) lastTs = m.createdAt
         }
         return base.copy(messages = list)
     }

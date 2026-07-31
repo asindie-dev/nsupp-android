@@ -110,7 +110,13 @@ fun NsuppChatScreen(modifier: Modifier = Modifier) {
             )
             Spacer(Modifier.width(8.dp))
             IconButton(
-                onClick = { val t = draft; draft = ""; Nsupp.send(t) },
+                onClick = {
+                    val gonderilen = draft
+                    draft = ""
+                    // Gönderim BAŞARISIZSA metin geri gelir — ama kullanıcı bu arada yeni bir şey
+                    // yazdıysa onun yazdığını EZMEYİZ (yazdığını kaybetmek asıl şikâyet konusu).
+                    Nsupp.send(gonderilen) { ok -> if (!ok && draft.isEmpty()) draft = gonderilen }
+                },
                 enabled = draft.isNotBlank(),
             ) { Text("→", style = MaterialTheme.typography.titleLarge) }
         }
