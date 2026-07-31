@@ -171,6 +171,54 @@ class NsuppApi(private val config: NsuppConfig, private val http: NsuppHttp) {
         return Json.conversations(data, "conversations")
     }
 
+    // ── Kimlik / oturum verisi / olay ──
+
+    /**
+     * Ziyaretçiyi tanıt.
+     *
+     * [signature]: sunucunuzda `HMAC-SHA256(email, identity_secret)` ile üretilir — **uygulamanın
+     * içinde ASLA üretmeyin**, sır istemciye gömülürse doğrulama anlamını yitirir.
+     *
+     * [attributes]: özel öznitelikler (plan, kullanıcı-id, `segments`…). `$` ve `_` önekli
+     * anahtarlar sunucuda düşürülür (ayrılmış ad alanları).
+     */
+    fun identify(
+        token: String,
+        email: String,
+        name: String?,
+        signature: String?,
+        attributes: Map<String, Any?>?,
+    ): IdentifyResult {
+        val sb = StringBuilder("""{"token":${Json.quote(token)},"email":${Json.quote(email)}""")
+        if (name != null) sb.append(""","name":${Json.quote(name)}""")
+        if (signature != null) sb.append(""","signature":${Json.quote(signature)}""")
+        if (!attributes.isNullOrEmpty()) sb.append(""","data":${Json.encodeMap(attributes)}""")
+        sb.append("}")
+        val data = Json.obj(call("/identify", "POST", sb.toString()), "data") ?: ""
+        val govde = "{$data}"
+        return IdentifyResult(
+            identity = Json.string(govde, "identity"),
+            identitySource = Json.string(govde, "identitySource"),
+        )
+    }
+
+    /**
+     * Sunucunun kimlik teşhisi. [identity] = HMAC yolunun sonucu
+     * (`valid`/`invalid`/`unsigned`/`no_secret`); [identitySource] = kimliği hangi yolun kurduğu.
+     * ENTEGRASYON TEŞHİSİ: "neden doğrulanmadı" sorusunun tek cevabı burada.
+     */
+    data class IdentifyResult(val identity: String?, val identitySource: String?)
+
+    /** Özel olay bildir (kampanya/tetikleyici koşulları + kişi zaman-çizelgesi). */
+    fun trackEvent(token: String, name: String) {
+        call("/event", "POST", """{"token":${Json.quote(token)},"kind":"event","name":${Json.quote(name)}}""")
+    }
+
+    /** Bir mesaj tetikleyicisini çalıştır (Crisp'in `runBotScenario` karşılığı). */
+    fun runTrigger(token: String, identifier: String) {
+        call("/trigger-run", "POST", """{"token":${Json.quote(token)},"identifier":${Json.quote(identifier)}}""")
+    }
+
     /**
      * FCM cihaz jetonunu kaydet. Uygulama HER AÇILIŞTA çağırmalı — jeton yenilenebilir ve
      * sunucu upsert olduğu için satır çoğalmaz.

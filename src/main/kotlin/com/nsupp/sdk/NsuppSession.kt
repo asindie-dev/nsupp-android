@@ -33,6 +33,11 @@ data class NsuppState(
     /** Kullanıcıya gösterilecek hata; null = sorun yok. */
     val error: String? = null,
     val conversationId: String? = null,
+    /**
+     * Sunucunun son kimlik teşhisi (`valid`/`invalid`/`unsigned`/`no_secret` ya da kaynak adı).
+     * Entegrasyonu kuran geliştirici "neden doğrulanmadı"yı buradan görür.
+     */
+    val identityStatus: String? = null,
 )
 
 class NsuppSession(
@@ -62,6 +67,23 @@ class NsuppSession(
      */
     private var yeniKonuBekliyor = false
 
+    /** Oturum açılmadan önce verilen kimlik — [start] sonrası gönderilir. */
+    private class Kimlik(
+        val email: String,
+        val name: String?,
+        val signature: String?,
+        val attributes: MutableMap<String, Any?>,
+    )
+
+    private var bekleyenKimlik: Kimlik? = null
+
+    /**
+     * Son tanıtılan e-posta/imza — [setSessionData] bunları yeniden kullanır: sunucu `/identify`
+     * ucunda e-posta ister, öznitelik yazmak için kimliği yeniden söylemek gerekir.
+     */
+    private var kimlikEmail: String? = null
+    private var kimlikImza: String? = null
+
     val visitorToken: String? get() = store.read()
 
     /** Oturumu aç (ilk açılışta ziyaretçi üretilir) ve geçmişi yükle. */
@@ -81,6 +103,8 @@ class NsuppSession(
             }
             r.visitorToken?.let { store.write(it) }
             emit(apply(state.copy(error = null, conversationId = r.conversationId), r.messages, advanceCursor = true))
+            // Oturumdan ÖNCE verilen kimlik şimdi gönderilir (yoksa müşteri anonim kalırdı).
+            bekleyenKimlik?.let { k -> bekleyenKimlik = null; gonderKimlik(k) }
         } catch (e: Exception) {
             emit(state.copy(error = e.message ?: "Bağlantı kurulamadı"))
         }
@@ -141,6 +165,73 @@ class NsuppSession(
         }
     }
 
+    // ── Kimlik / oturum verisi / olay ──
+
+    /**
+     * Ziyaretçiyi tanıt — operatör kimin yazdığını görsün, VIP/segment yönlendirmesi çalışsın.
+     *
+     * Oturum henüz açılmadıysa kimlik BEKLETİLİR ve ilk [start] sonrası gönderilir; bu yüzden
+     * kullanıcı giriş yaptığı anda güvenle çağırabilirsiniz. Kuyruk olmasaydı çağrı sessizce düşer
+     * ve müşteri operatörde ANONİM görünürdü — VIP/segment yönlendirmesi de hiç çalışmazdı.
+     *
+     * @param signature `HMAC-SHA256(email, identity_secret)` — **sunucunuzda** üretin. Kimlik
+     *   doğrulama zorunluysa imzasız çağrı 403 alır ve sebebi [NsuppState.identityStatus] taşır.
+     * @param attributes özel öznitelikler. Segment yönlendirmesi için `mapOf("segments" to listOf("vip"))`.
+     */
+    fun identify(
+        email: String,
+        name: String? = null,
+        signature: String? = null,
+        attributes: Map<String, Any?>? = null,
+    ): Boolean {
+        val k = Kimlik(email, name, signature, (attributes ?: emptyMap()).toMutableMap())
+        if (store.read() == null) {
+            bekleyenKimlik = k
+            return true // kuyruğa alındı; start() gönderecek
+        }
+        return gonderKimlik(k)
+    }
+
+    /**
+     * Özel öznitelik yaz/güncelle (Crisp'in `session.setString/setInt/setBool` karşılığı).
+     * Sunucu MERGE eder: verilmeyen anahtarlar korunur.
+     *
+     * ⚠️ **Önce [identify] gerekir.** Öznitelikler CRM'deki KİŞİ kaydında yaşar ve kişi e-posta ile
+     * doğar; e-posta yokken yazacak bir yer yoktur (web SDK'sı da aynı kuralla çalışır). Kimlik
+     * henüz gönderilmediyse öznitelikler bekleyen kimliğe eklenir; hiç verilmediyse `false` döner —
+     * sessizce yutulmaz.
+     */
+    fun setSessionData(attributes: Map<String, Any?>): Boolean {
+        bekleyenKimlik?.let { it.attributes.putAll(attributes); return true }
+        val email = kimlikEmail ?: run {
+            emit(state.copy(error = "Öznitelik yazmadan önce identify(email) çağırın."))
+            return false
+        }
+        return gonderKimlik(Kimlik(email, null, kimlikImza, attributes.toMutableMap()))
+    }
+
+    /**
+     * Segmentleri ayarla (VIP/plan yönlendirmesi). Sunucudaki `attributes.segments` anahtarını
+     * DEĞİŞTİRİR (birleştirmez) — istemci mevcut segmentleri bilmediği için birleştirme sözü
+     * veremezdik; verseydik yalan olurdu.
+     */
+    fun setSegments(segments: List<String>): Boolean = setSessionData(mapOf("segments" to segments))
+
+    /**
+     * Özel olay bildir. Oturum yoksa `false` döner: olay BİR ANA aittir, kuyruğa alıp sonra
+     * göndermek onu yalan yapardı.
+     */
+    fun trackEvent(name: String): Boolean {
+        val token = store.read() ?: return false
+        return try { api.trackEvent(token, name); true } catch (_: Exception) { false }
+    }
+
+    /** Bir mesaj tetikleyicisini çalıştır (Crisp'in `runBotScenario` karşılığı). */
+    fun runTrigger(identifier: String): Boolean {
+        val token = store.read() ?: return false
+        return try { api.runTrigger(token, identifier); true } catch (_: Exception) { false }
+    }
+
     /**
      * Oturumu tamamen sıfırla — **kullanıcı uygulamanızdan ÇIKIŞ yaptığında çağırın.**
      *
@@ -153,6 +244,9 @@ class NsuppSession(
         store.write(null)
         seen.clear()
         lastTs = null
+        bekleyenKimlik = null
+        kimlikEmail = null
+        kimlikImza = null
         emit(NsuppState())
     }
 
@@ -195,6 +289,22 @@ class NsuppSession(
     }
 
     // ── iç ──
+
+    private fun gonderKimlik(k: Kimlik): Boolean {
+        val token = store.read() ?: return false
+        return try {
+            val r = api.identify(token, k.email, k.name, k.signature, k.attributes.ifEmpty { null })
+            kimlikEmail = k.email
+            kimlikImza = k.signature
+            emit(state.copy(identityStatus = r.identitySource ?: r.identity))
+            true
+        } catch (e: Exception) {
+            // Kimlik hatası SESSİZ DÜŞMEZ: zorunluluk açıkken sunucu 403 döner ve entegrasyonu
+            // kuran geliştirici sebebi göremezse "neden anonim görünüyor" sorusu çözümsüz kalır.
+            emit(state.copy(error = e.message, identityStatus = e.message))
+            false
+        }
+    }
 
     /**
      * 🔴 [advanceCursor] NEDEN VAR: imleç ([lastTs]) YALNIZ sunucudan LİSTE olarak gelen mesajlarla

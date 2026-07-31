@@ -182,6 +182,55 @@ class NsuppSessionTest {
         assertEquals("yeni", s.state.conversationId)
     }
 
+    @Test fun `oturum ACILMADAN verilen kimlik BEKLETILIR ve start sonrasi gonderilir`() {
+        // Uygulamalar kimliği giriş anında verir; oturum ise sohbet ekranı ilk açıldığında doğar.
+        // Kuyruk olmasaydı identify sessizce düşer, müşteri operatörde ANONİM görünürdü.
+        val http = SahteHttp(mutableListOf(
+            200 to """{"data":{"visitorToken":"vt","messages":[]}}""",
+            200 to """{"data":{"ok":true,"identity":"valid","identitySource":"signature"}}""",
+        ))
+        val s = NsuppSession(NsuppApi(cfg, http), InMemoryTokenStore())
+        s.identify("a@b.com", name = "Ada", signature = "imza", attributes = mapOf("segments" to listOf("vip")))
+        assertEquals(0, http.istekler.size, "oturum yokken ağa çıkıldı")
+        s.start()
+        assertEquals("/identify", http.istekler.last().first.substringAfterLast("pk_1"))
+        val govde = http.songovde!!
+        assertTrue(govde.contains("\"email\":\"a@b.com\""), govde)
+        assertTrue(govde.contains("\"signature\":\"imza\""), govde)
+        assertTrue(govde.contains("\"segments\":[\"vip\"]"), "segment dizisi kodlanmadı: $govde")
+        assertEquals("signature", s.state.identityStatus)
+    }
+
+    @Test fun `kimliksiz oznitelik yazma SESSIZCE YUTULMAZ`() {
+        // Öznitelikler kişi kaydında yaşar; kişi e-posta ile doğar. Sessiz no-op, ayarın yalan
+        // söylemesiyle aynı şeydir.
+        val http = SahteHttp(mutableListOf(200 to """{"data":{"visitorToken":"vt","messages":[]}}"""))
+        val s = NsuppSession(NsuppApi(cfg, http), InMemoryTokenStore())
+        s.start()
+        assertTrue(!s.setSessionData(mapOf("plan" to "pro")), "kimliksiz yazma başarılı sayıldı")
+        assertTrue(s.state.error!!.contains("identify"), "sebep gösterilmedi: ${s.state.error}")
+    }
+
+    @Test fun `oturum yokken olay gonderilmez (olay BIR ANA aittir)`() {
+        val http = SahteHttp(mutableListOf())
+        val s = NsuppSession(NsuppApi(cfg, http), InMemoryTokenStore())
+        assertTrue(!s.trackEvent("Signup"))
+        assertEquals(0, http.istekler.size)
+    }
+
+    @Test fun `cikis kimligi de temizler`() {
+        val http = SahteHttp(mutableListOf(
+            200 to """{"data":{"visitorToken":"vt","messages":[]}}""",
+            200 to """{"data":{"ok":true,"identity":"valid"}}""",
+        ))
+        val s = NsuppSession(NsuppApi(cfg, http), InMemoryTokenStore())
+        s.start()
+        s.identify("a@b.com")
+        s.reset()
+        // reset sonrası öznitelik yazımı kimlik istemeli — eski e-posta taşınmamalı.
+        assertTrue(!s.setSessionData(mapOf("plan" to "pro")), "çıkıştan sonra ESKİ kimlik hâlâ kullanıldı")
+    }
+
     @Test fun `bos mesaj gonderilmez`() {
         val http = SahteHttp(mutableListOf())
         NsuppSession(NsuppApi(cfg, http), InMemoryTokenStore("vt")).send("   ")

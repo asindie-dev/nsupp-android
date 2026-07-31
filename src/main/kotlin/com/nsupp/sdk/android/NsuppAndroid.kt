@@ -147,6 +147,47 @@ object Nsupp {
     }
 
     /**
+     * Ziyaretçiyi tanıt — **giriş yaptığı anda çağırın**, sohbet ekranını beklemeyin.
+     *
+     * Oturum henüz yoksa kimlik bekletilir ve sohbet ilk açıldığında gönderilir.
+     * [signature]'ı SUNUCUNUZDA üretin (`HMAC-SHA256(email, identity_secret)`); uygulamaya gömülen
+     * bir sır doğrulamayı anlamsız kılar.
+     */
+    fun identify(
+        email: String,
+        name: String? = null,
+        signature: String? = null,
+        attributes: Map<String, Any?>? = null,
+    ) {
+        val s = session ?: return
+        scope?.launch { s.identify(email, name, signature, attributes) }
+    }
+
+    /** Özel öznitelik yaz/güncelle. Önce [identify] gerekir (öznitelikler kişi kaydında yaşar). */
+    fun setSessionData(attributes: Map<String, Any?>) {
+        val s = session ?: return
+        scope?.launch { s.setSessionData(attributes) }
+    }
+
+    /** Segmentleri ayarla (VIP/plan yönlendirmesi). `attributes.segments` DEĞİŞTİRİLİR. */
+    fun setSegments(segments: List<String>) {
+        val s = session ?: return
+        scope?.launch { s.setSegments(segments) }
+    }
+
+    /** Özel olay bildir (kampanya/tetikleyici koşulları + kişi zaman-çizelgesi). */
+    fun trackEvent(name: String) {
+        val s = session ?: return
+        scope?.launch { s.trackEvent(name) }
+    }
+
+    /** Bir mesaj tetikleyicisini çalıştır (Crisp'in `runBotScenario` karşılığı). */
+    fun runTrigger(identifier: String) {
+        val s = session ?: return
+        scope?.launch { s.runTrigger(identifier) }
+    }
+
+    /**
      * Oturumu sıfırla — **kullanıcı uygulamanızdan ÇIKIŞ yaptığında çağırın.**
      *
      * Jetonu siler ve yoklamayı durdurur. Bu olmadan paylaşılan bir cihazda bir sonraki kullanıcı,

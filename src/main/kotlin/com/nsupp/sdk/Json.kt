@@ -125,7 +125,30 @@ internal object Json {
         return sb.append('"').toString()
     }
 
+    /**
+     * Öznitelik haritasını JSON nesnesine çevir.
+     *
+     * KAPSAM SINIRI DÜRÜSTÇE: string / sayı / boolean / null ve bunların LİSTESİ desteklenir
+     * (`segments: [..]` bu yüzden gerekli). Başka bir tür `toString()` ile metne düşürülür —
+     * sessizce ATILMAZ: kaybolan öznitelik, yanlış tipte öznitelikten daha zor teşhis edilir.
+     */
+    fun encodeMap(map: Map<String, Any?>): String =
+        map.entries.joinToString(",", "{", "}") { (k, v) -> "${quote(k)}:${encodeValue(v)}" }
+
+    private fun encodeValue(v: Any?): String = when (v) {
+        null -> "null"
+        is String -> quote(v)
+        is Boolean -> v.toString()
+        is Int, is Long, is Short, is Byte -> v.toString()
+        is Double -> if (v.isFinite()) v.toString() else "null"
+        is Float -> if (v.isFinite()) v.toString() else "null"
+        is Iterable<*> -> v.joinToString(",", "[", "]") { encodeValue(it) }
+        is Map<*, *> -> v.entries.joinToString(",", "{", "}") { (k, x) -> "${quote(k.toString())}:${encodeValue(x)}" }
+        else -> quote(v.toString())
+    }
+
     // ── iç ──
+
 
     /**
      * `"key"` sonrası ':' konumunu bulur.
