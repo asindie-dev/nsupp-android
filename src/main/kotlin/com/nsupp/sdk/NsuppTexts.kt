@@ -31,4 +31,7 @@ object NsuppTexts {
     val connectFailed: String get() = t("Bağlantı kurulamadı", "Couldn’t connect")
     val sendFailed: String get() = t("Mesaj gönderilemedi", "Couldn’t send the message")
     val ratePrompt: String get() = t("Bu görüşmeyi nasıl buldunuz?", "How was this conversation?")
+
+    /** Köşe balonunun erişilebilirlik etiketi — ekran okuyucu yalnız bunu duyar. */
+    val openChatLabel: String get() = t("Destek sohbetini aç", "Open support chat")
 }

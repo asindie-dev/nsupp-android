@@ -54,9 +54,10 @@ istemcisini WebView'da açar, powered-by bağlantısı dahil her öğe web widge
 anahtarı ve ziyaretçi jetonu, anlık bildirim kaydı, bildirimden derin bağlantı, yükleme/hata
 durumu, dış bağlantıların sistem tarayıcısında açılması.
 
-**Launcher balonu yok** (bilinçli): hiçbir lider mobil SDK zorunlu köşe balonu çizmiyor. Balon
-şeffaf tam-ekran katman ve dokunma geçirgenliği ister; yanlış yapıldığında sizin kendi arayüzünüzü
-tıklanamaz bırakır. Siz kendi "Destek" düğmenizi koyarsınız, SDK sohbeti **açık ve tam ekran** açar.
+**Sunumu siz seçersiniz, SDK dayatmaz.** Sohbetin nerede duracağı üç yoldan biriyle kararlaştırılır
+(aşağıdaki "Sohbeti nerede göstereceksiniz" bölümü): köşede ikon/balon, kayan panel ya da kendi
+arayüzünüze gömülü. Görünümün kendisi hiçbir kipte değişmez — metinler, bölümler ve renkler tek
+kaynaktan, çalışma alanı ayarından gelir.
 
 ---
 
@@ -91,18 +92,74 @@ class App : Application() {
 `publicKey` = panelde **Ayarlar → Kurulum ve Entegrasyonlar** ekranındaki gömme kodunda geçen `data-public-key`.
 Gizli değildir; tarayıcıda da açıkta durur.
 
-## Sohbeti açmak
+## Sohbeti nerede göstereceksiniz — üç yol, hiçbiri dayatılmaz
 
-Kendi "Destek" düğmenizden:
+Üçünde de **aynı web widget'ı** çalışır: metinler, bölümler (Makaleler, ön-sohbet, hamburger, marka
+satırı) ve renkler yalnız panelden, çalışma alanı ayarından gelir. Kabuk hiçbirini geçersiz kılmaz —
+web, mobil ve masaüstü birebir aynı görünür.
+
+**① Köşede ikon (balon) + kayan panel** — web'deki launcher'ın karşılığı:
+
+```kotlin
+private val destek = NsuppChatPresenter(kip = NsuppSunumKipi.BALON)
+
+override fun onCreate(savedInstanceState: Bundle?) {
+    super.onCreate(savedInstanceState)
+    setContentView(R.layout.activity_main)
+    destek.start(this)          // köşedeki ikon görünür; dokununca panel açılır/kapanır
+}
+```
+
+Kendi düğmenizden açmak isterseniz `kip = NsuppSunumKipi.PANEL` verin ve ikon çizmeyin:
+
+```kotlin
+private val destek = NsuppChatPresenter()          // varsayılan: PANEL
+destekDugmesi.setOnClickListener { destek.present(this) }
+```
+
+**② Kendi arayüzünüze gömülü** — sekme, yan panel, ayrı ekran, bölünmüş görünümün yarısı:
+
+```xml
+<com.nsupp.sdk.android.NsuppWebChatView
+    android:layout_width="match_parent"
+    android:layout_height="match_parent" />
+```
+
+```kotlin
+// Compose:
+AndroidView(factory = { NsuppWebChatView(it) }, modifier = Modifier.fillMaxSize())
+```
+
+**③ Hazır tam ekran** — en kısa yol:
 
 ```kotlin
 NsuppChatActivity.start(context)
 ```
 
-Sohbet açık ve tam ekran gelir; içinde web widget'ının kendisi çalışır. **Yerel bir sohbet ekranı
-çizmeyin** — widget'ın görünümü ve işlevi çalışma alanı ayarından gelir; yerel bir kopya "tek
-noktadan yönetim" vaadini kırar. `NsuppSession` sohbet DIŞI entegrasyon içindir (kimlik, anlık
-bildirim, kendi ekranınızda göstermek istediğiniz makaleler).
+**Yerel bir sohbet ekranı çizmeyin** — widget'ın görünümü ve işlevi çalışma alanı ayarından gelir;
+yerel bir kopya "tek noktadan yönetim" vaadini kırar. `NsuppSession` sohbet DIŞI entegrasyon
+içindir (kimlik, anlık bildirim, kendi ekranınızda göstermek istediğiniz makaleler).
+
+### Sunumun bilinmesi gerekenleri
+
+- **Balon şeffaf tam-ekran katman DEĞİLDİR.** Activity'nin içerik kökünde yalnız 60 dp'lik yer
+  kaplar; kaplamadığı hiçbir piksel dokunma yakalamaz, yani sizin arayüzünüz tıklanabilir kalır.
+- **Ölçüler web widget'ıyla eşlenmiştir**: panel 360×520 dp, dar ekranda `ekran − 40` /
+  `ekran − 120` dp'ye kısılır (web'in `max-width`/`max-height` kuralı), balon 60 dp, kenar boşluğu
+  20 dp, balon varken panelin alt boşluğu 76 dp. Aynı sayılar masaüstü kabuğunda da geçerlidir.
+- **Panel açıkken geri tuşu paneli kapatır**, Activity'nizi değil. Bunun için panel açılırken odağı
+  alır (geri tuşu yalnız odaklı görünüm zincirine ulaşır); klavye açılmaz.
+- **Sistem çubukları hesaba katılır.** Kenardan kenara (Android 15 / targetSdk 35) pencerede balon
+  ve panel gezinme çubuğunun üstüne oturur; boşluk bilgisi **tüketilmez**, sizin düzeniniz de alır.
+- **Balonun rengi uygulamanızın tema vurgu rengidir** (`android:colorAccent`), çalışma alanı rengi
+  değil: balon sohbet açılmadan önce görünür, o an widget yapılandırması henüz indirilmemiştir —
+  rengi ağdan beklemek balonun geç ve renk atlayarak belirmesi demekti. Kendi ikonunuzu istiyorsanız
+  `PANEL` kipini kullanıp düğmeyi siz koyun.
+- **Aynı anda tek sohbet yüzeyi tutun.** Panel, gömülü görünüm ve `NsuppChatActivity` aynı köprüyü
+  paylaşır; ikisi birden canlıyken komutlar (bildirimden konuşma açma, çıkışta sıfırlama) yalnız en
+  son açılan yüzeye gider. İkinci yüzey açıldığında logcat'e `NsuppWebChat` etiketiyle uyarı düşer.
+- **Çıkışta `presenter.reset()`** çağırmak yeter: içinde `Nsupp.reset()` vardır (jeton + oturum +
+  sayfa) ve paneli kapatır. Yalnız `Nsupp.reset()` çağırırsanız panel açık kalır.
 
 ## Anlık bildirim (FCM)
 
@@ -165,6 +222,15 @@ Oturum henüz yoksa kimlik **bekletilir** ve sohbet ilk açıldığında gönder
 ## Tüm yüzey
 
 ```kotlin
+// Sunum — üç yol (yukarıdaki bölüm)
+val destek = NsuppChatPresenter(kip = NsuppSunumKipi.BALON)
+destek.start(activity)                         // köşedeki ikon (yalnız BALON kipinde)
+destek.present(activity, conversationId)       // paneli aç (konuşma id'si isteğe bağlı)
+destek.dismiss(); destek.toggle(activity)
+destek.reset()                                 // ÇIKIŞTA — Nsupp.reset()'i de kapsar
+NsuppWebChatView(context)                      // kendi düzeninize gömülü görünüm
+NsuppChatActivity.start(context)               // hazır tam ekran
+
 Nsupp.init(context, apiBase, publicKey)
 Nsupp.send(text) { ok -> … }                   // başarısızsa false
 Nsupp.identify(email, name, signature, attributes)

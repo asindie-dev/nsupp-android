@@ -101,6 +101,12 @@ class NsuppWebChat(
      */
     @SuppressLint("SetJavaScriptEnabled")
     fun createWebView(context: Context): WebView {
+        if (webView != null) {
+            // AYNI ANDA TEK YÜZEY: komutlar (bildirimden konuşma açma, çıkışta sıfırlama) aşağıda
+            // saklanan SON WebView'a gider; önceki yüzey sessizce komutsuz kalırdı — sessiz kilit
+            // teşhis edilemez, en azından sebebi logcat'e yazılır.
+            Log.w(TAG, "ikinci sohbet yüzeyi açıldı; öncekine artık komut gitmiyor")
+        }
         val wv = WebView(context.applicationContext)
         wv.settings.javaScriptEnabled = true
         // Ziyaretçi jetonu için: kapalıysa köprü devreye girer (aşağıdaki `visitorToken`).

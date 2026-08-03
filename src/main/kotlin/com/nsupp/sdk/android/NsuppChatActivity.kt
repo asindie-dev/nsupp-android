@@ -10,9 +10,10 @@ import android.widget.FrameLayout
 /**
  * Hazır sohbet ekranı — içinde **web widget'ının kendisi** çalışır.
  *
- * LAUNCHER BALONU YOK (bilinçli karar): hiçbir lider mobil SDK zorunlu köşe balonu çizmiyor. Balon
- * şeffaf tam-ekran katman + dokunma geçirgenliği ister ve yanlış yapıldığında satıcının KENDİ
- * arayüzünü tıklanamaz bırakır. Satıcı kendi "Destek" düğmesini koyar, SDK sohbeti açar.
+ * ÜÇ YOLDAN BİRİ, HİÇBİRİ DAYATILMAZ: bu Activity hazır TAM EKRAN yoldur; köşede ikon/kayan panel
+ * isteyen [NsuppChatPresenter]'ı, kendi düzenine gömmek isteyen [NsuppWebChatView]'i kullanır.
+ * Balon HİÇBİR kipte şeffaf tam-ekran katman değildir (satıcının kendi arayüzünü tıklanamaz
+ * bırakırdı); yalnız kapladığı 60 dp'lik daire dokunma yakalar.
  */
 class NsuppChatActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
