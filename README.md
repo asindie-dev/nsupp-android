@@ -133,6 +133,11 @@ Nsupp.startNewConversation()                   // ayrı konu; öncekiler KAPANMA
 Nsupp.openConversation(id)
 Nsupp.registerPushToken(fcmToken)
 Nsupp.reset()                                  // ÇIKIŞTA çağırın
+
+// Yardım merkezi (self-servis — sohbeti hiç açmadan çözülen sorular)
+Nsupp.loadArticles()                           // state.articles doldurulur
+Nsupp.searchArticles("kargo")
+Nsupp.article("iade")
 ```
 
 **Çıkışta `reset()` çağırın.** Ziyaretçi jetonu kimliğe değil **cihaza** bağlıdır; çağırmazsanız

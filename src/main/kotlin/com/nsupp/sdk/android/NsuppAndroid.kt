@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import com.nsupp.sdk.NsuppApi
+import com.nsupp.sdk.NsuppArticle
 import com.nsupp.sdk.NsuppConfig
 import com.nsupp.sdk.NsuppHttp
 import com.nsupp.sdk.NsuppSession
@@ -180,6 +181,21 @@ object Nsupp {
         val s = session ?: return
         scope?.launch { s.trackEvent(name) }
     }
+
+    /**
+     * Yardım merkezi makalelerini yükle — sohbeti hiç açmadan çözülen sorular (self-servis).
+     * Sonuç `NsuppState.articles`e düşer.
+     */
+    suspend fun loadArticles(locale: String? = null): Boolean =
+        withContext(Dispatchers.IO) { session?.loadArticles(locale) ?: false }
+
+    /** Makale ara. Sorgu boşsa yüklü liste döner. */
+    suspend fun searchArticles(query: String, locale: String? = null): List<NsuppArticle> =
+        withContext(Dispatchers.IO) { session?.searchArticles(query, locale) ?: emptyList() }
+
+    /** Tek makaleyi getir (görüntülenme sayacı sunucuda artar). */
+    suspend fun article(slug: String, locale: String? = null): NsuppArticle? =
+        withContext(Dispatchers.IO) { session?.article(slug, locale) }
 
     /** Konuşmayı puanla (CSAT, 1–5). `NsuppState.pendingRating` true iken sorulur. */
     fun rate(score: Int, comment: String? = null) {

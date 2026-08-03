@@ -79,6 +79,21 @@ data class NsuppConversation(
     val lastAt: String? = null,
 )
 
+/** Yardım merkezi makalesi (public KB DTO'suyla aynı alanlar). */
+data class NsuppArticle(
+    val id: String,
+    val title: String,
+    val slug: String,
+    /**
+     * Makale gövdesi (sunucunun ürettiği biçim). Uygulama nasıl çizeceğine kendisi karar verir —
+     * SDK bir render motoru dayatmaz.
+     */
+    val body: String,
+    val locale: String? = null,
+    val categoryId: String? = null,
+    val updatedAt: String? = null,
+)
+
 /**
  * Sunucu 4xx/5xx döndü — [message] kullanıcıya gösterilecek sebeptir, kaybedilmez.
  *
@@ -252,6 +267,49 @@ class NsuppApi(private val config: NsuppConfig, private val http: NsuppHttp) {
     /** Özel olay bildir (kampanya/tetikleyici koşulları + kişi zaman-çizelgesi). */
     fun trackEvent(token: String, name: String) {
         call("/event", "POST", """{"token":${Json.quote(token)},"kind":"event","name":${Json.quote(name)}}""")
+    }
+
+    // ── Yardım merkezi (KB) ──
+    //
+    // ⚠️ FARKLI YOL ÖNEKİ: KB uçları `/widget/:key/…` altında DEĞİL, `/cof/kb/public/:key/…`
+    // altında yaşar (web yardım merkeziyle aynı yüzey). Ayrı bir mobil KB API'si açmadık —
+    // açsaydık makale görünürlüğü/kilidi/dil çözümü iki yerde ayrışırdı.
+
+    private fun kbCall(path: String): String {
+        val url = "${config.base}/cof/kb/public/${config.publicKey}$path"
+        val (code, text) = http.request(url, "GET", null, mapOf(
+            "content-type" to "application/json",
+            "x-nsupp-sdk-platform" to config.sdkPlatform,
+        ))
+        if (code !in 200..299) {
+            // Kilitli KB'de sunucu `code: "kb_locked"` der; olduğu gibi taşınır ki uygulama
+            // "makale yok" ile "makaleler kilitli"yi ayırt edebilsin.
+            val sebep = Json.string(text, "code") ?: Json.string(text, "error") ?: "HTTP $code"
+            throw NsuppServerException(code, sebep)
+        }
+        return text
+    }
+
+    /** Yayınlı makaleleri listele. [locale] verilmezse sunucu karar verir. */
+    fun articles(locale: String? = null): List<NsuppArticle> {
+        val q = if (locale == null) "/articles" else "/articles?locale=${Url.encode(locale)}"
+        val data = Json.obj(kbCall(q), "data") ?: return emptyList()
+        return Json.articles("{$data}", "articles")
+    }
+
+    /** Makale ara. Sunucu bu uçta ZARF İÇİNDE DÜZ DİZİ döner (`{data: [...]}`). */
+    fun searchArticles(query: String, locale: String? = null): List<NsuppArticle> {
+        var q = "/search?q=${Url.encode(query)}"
+        if (locale != null) q += "&locale=${Url.encode(locale)}"
+        return Json.articles(kbCall(q), "data")
+    }
+
+    /** Tek makaleyi slug ile getir (görüntülenme sayacı sunucuda artar). */
+    fun article(slug: String, locale: String? = null): NsuppArticle? {
+        var q = "/articles/${Url.encode(slug)}"
+        if (locale != null) q += "?locale=${Url.encode(locale)}"
+        val data = Json.obj(kbCall(q), "data") ?: return null
+        return Json.article("{$data}")
     }
 
     /** Konuşmayı puanla (CSAT). [score] 1–5; sunucu aralık dışını reddeder. */

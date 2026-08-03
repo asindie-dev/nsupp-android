@@ -88,6 +88,24 @@ internal object Json {
     fun messages(src: String, key: String): List<NsuppMessage> =
         items(arr(src, key)).mapNotNull { message(it) }
 
+    /** Tek makale nesnesi (ham `{…}` gövdesi). Kimliği/slug'ı yoksa makale sayılmaz → null. */
+    fun article(o: String): NsuppArticle? {
+        val id = string(o, "id") ?: return null
+        val slug = string(o, "slug") ?: return null
+        return NsuppArticle(
+            id = id,
+            title = string(o, "title") ?: "",
+            slug = slug,
+            body = string(o, "body") ?: "",
+            locale = string(o, "locale"),
+            categoryId = string(o, "categoryId"),
+            updatedAt = string(o, "updatedAt"),
+        )
+    }
+
+    fun articles(src: String, key: String): List<NsuppArticle> =
+        items(arr(src, key)).mapNotNull { article(it) }
+
     fun conversations(src: String, key: String): List<NsuppConversation> =
         items(arr(src, key)).mapNotNull { o ->
             val id = string(o, "id") ?: return@mapNotNull null

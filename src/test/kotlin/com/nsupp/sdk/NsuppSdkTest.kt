@@ -271,6 +271,41 @@ class NsuppSessionTest {
         assertTrue(http.songovde!!.contains("\"score\":5"), http.songovde!!)
     }
 
+    @Test fun `yardim merkezi makaleleri yuklenir ve YOL widget altinda DEGIL`() {
+        val http = SahteHttp(mutableListOf(200 to """{"data":{"articles":[{"id":"a1","title":"İade nasıl yapılır","slug":"iade","body":"…","locale":"tr"}],"locale":"tr"}}"""))
+        val s = NsuppSession(NsuppApi(cfg, http), InMemoryTokenStore())
+        assertTrue(s.loadArticles())
+        assertEquals("iade", s.state.articles.first().slug)
+        // KB uçları /widget altında DEĞİL; yol karışırsa 404 alınır ve makaleler hiç görünmez.
+        assertEquals("https://api.test/cof/kb/public/pk_1/articles", http.istekler[0].first)
+    }
+
+    @Test fun `makale aramasi ZARF ICINDE DUZ DIZI okur`() {
+        // Bu uç `{data:[...]}` döner (liste ucu `{data:{articles:[...]}}` döner) — ikisini
+        // karıştırmak arama sonucunu SESSİZCE boşaltırdı.
+        val http = SahteHttp(mutableListOf(200 to """{"data":[{"id":"a1","title":"Kargo","slug":"kargo","body":"x"}]}"""))
+        val r = NsuppApi(cfg, http).searchArticles("kargo")
+        assertEquals(1, r.size)
+        assertEquals("kargo", r[0].slug)
+        assertTrue(http.istekler[0].first.contains("q=kargo"), http.istekler[0].first)
+    }
+
+    @Test fun `kilitli yardim merkezi SEBEBI TASIR (bos liste yalani yok)`() {
+        val http = SahteHttp(mutableListOf(401 to """{"error":"Şifre gerekli","code":"kb_locked"}"""))
+        val s = NsuppSession(NsuppApi(cfg, http), InMemoryTokenStore())
+        assertTrue(!s.loadArticles())
+        assertEquals("kb_locked", s.state.error)
+    }
+
+    @Test fun `bos sorgu yuklu listeyi doner (gereksiz ag cagrisi yok)`() {
+        val http = SahteHttp(mutableListOf(200 to """{"data":{"articles":[{"id":"a1","title":"T","slug":"s","body":"b"}]}}"""))
+        val s = NsuppSession(NsuppApi(cfg, http), InMemoryTokenStore())
+        s.loadArticles()
+        val onceki = http.istekler.size
+        assertEquals(1, s.searchArticles("   ").size)
+        assertEquals(onceki, http.istekler.size, "boş sorgu için ağa çıkıldı")
+    }
+
     @Test fun `bos mesaj gonderilmez`() {
         val http = SahteHttp(mutableListOf())
         NsuppSession(NsuppApi(cfg, http), InMemoryTokenStore("vt")).send("   ")

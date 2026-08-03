@@ -40,6 +40,8 @@ data class NsuppState(
     val identityStatus: String? = null,
     /** Konuşma çözüldü ve puan bekliyor → arayüz CSAT sorar. */
     val pendingRating: Boolean = false,
+    /** Yüklenmiş yardım merkezi makaleleri ([NsuppSession.loadArticles] doldurur). */
+    val articles: List<NsuppArticle> = emptyList(),
 )
 
 class NsuppSession(
@@ -250,6 +252,45 @@ class NsuppSession(
     fun runTrigger(identifier: String): Boolean {
         val token = store.read() ?: return false
         return try { api.runTrigger(token, identifier); true } catch (_: Exception) { false }
+    }
+
+    // ── Yardım merkezi (KB) ──
+
+    /**
+     * Yayınlı makaleleri yükle ([NsuppState.articles] doldurulur).
+     *
+     * Bunu göstermek, sohbeti hiç açmadan çözülen sorular demektir — self-servis. Mobilde bu yüzey
+     * hiç yoktu, yani mobil kanalda yönlendirme (deflection) oranı SIFIRDI.
+     *
+     * Yardım merkezi şifreliyse hata `kb_locked` taşır: "makale yok" ile "makaleler kilitli" ayrı
+     * şeylerdir ve ikincisini boş listeye çevirmek yalan olurdu.
+     */
+    fun loadArticles(locale: String? = null): Boolean = try {
+        emit(state.copy(articles = api.articles(locale), error = null))
+        true
+    } catch (e: Exception) {
+        emit(state.copy(error = e.message))
+        false
+    }
+
+    /** Makale ara. Sorgu boşsa yüklü liste döner; hata durumunda BOŞ dizi + sebep. */
+    fun searchArticles(query: String, locale: String? = null): List<NsuppArticle> {
+        val q = query.trim()
+        if (q.isEmpty()) return state.articles
+        return try {
+            api.searchArticles(q, locale)
+        } catch (e: Exception) {
+            emit(state.copy(error = e.message))
+            emptyList()
+        }
+    }
+
+    /** Tek makaleyi getir (görüntülenme sayacı sunucuda artar). */
+    fun article(slug: String, locale: String? = null): NsuppArticle? = try {
+        api.article(slug, locale)
+    } catch (e: Exception) {
+        emit(state.copy(error = e.message))
+        null
     }
 
     /**
