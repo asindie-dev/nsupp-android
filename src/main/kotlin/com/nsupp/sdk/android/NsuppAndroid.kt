@@ -78,10 +78,21 @@ internal class PrefsTokenStore(context: Context, publicKey: String) : NsuppToken
  *
  * KULLANIM (Application.onCreate):
  *   Nsupp.init(this, apiBase = "https://api.nsupp.com", publicKey = "pk_…")
- * Sohbeti açmak:  NsuppChatActivity.start(context)   — ya da NsuppChatScreen()'i kendi ekranınıza gömün.
+ * Sohbeti açmak:  NsuppChatActivity.start(context)
+ *
+ * Sohbet arayüzü WEB WIDGET'ININ KENDİSİDİR (NsuppWebChat): görünüm ve işlevin tamamı çalışma
+ * alanı ayarından gelir. Yerel bir sohbet ekranı SUNMUYORUZ — sunsaydık widget iki yerde çizilir
+ * ve "tek noktadan yönetim" vaadi kod düzeyinde tutulamazdı.
  */
 object Nsupp {
     @Volatile private var session: NsuppSession? = null
+
+    /**
+     * Sohbet yüzeyi — **web widget'ının kendisi** (yerel bir kopyası DEĞİL). Görünüm ve işlevin
+     * tamamı çalışma alanı ayarından gelir; ayrı bir mobil arayüz sunmuyoruz.
+     */
+    @Volatile internal var webChat: NsuppWebChat? = null
+        private set
     private var scope: CoroutineScope? = null
     private var pollJob: Job? = null
     private var pendingPushToken: String? = null
@@ -97,8 +108,11 @@ object Nsupp {
     fun init(context: Context, apiBase: String, publicKey: String, appKey: String? = null) {
         if (session != null) return
         val cfg = NsuppConfig(apiBase, publicKey, appKey = appKey)
-        val s = NsuppSession(NsuppApi(cfg, AndroidHttp()), PrefsTokenStore(context, publicKey))
+        val store = PrefsTokenStore(context, publicKey)
+        val s = NsuppSession(NsuppApi(cfg, AndroidHttp()), store)
         session = s
+        // Sohbet arayüzü WebView'da; `NsuppSession` artık YALNIZ kimlik/bildirim/yapılandırma için.
+        webChat = NsuppWebChat(cfg, store)
         // 🔴 TEK İŞ PARÇACIĞI: NsuppSession'ın durumu (state/seen/lastTs) korumasız alanlar — saf
         // Kotlin olması için bilinçli bir tercih. Çok-iş-parçacıklı bir IO havuzunda `send` ile
         // `pollOnce` çakışırsa mesaj kaybı ve bozuk imleç üretir. `limitedParallelism(1)` çekirdeği
@@ -226,6 +240,9 @@ object Nsupp {
         onChatClosed()
         pendingPushToken = null
         session?.reset()
+        // Paylaşılan cihazda sonraki kullanıcı öncekinin sohbetini AÇMAMALI: jeton silinir ve
+        // sayfa sıfırlanır.
+        webChat?.reset()
     }
 
     /**
