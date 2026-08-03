@@ -211,8 +211,14 @@ class NsuppSession(
     ): Boolean {
         val k = Kimlik(email, name, signature, (attributes ?: emptyMap()).toMutableMap())
         if (store.read() == null) {
+            // 🔴 OTURUMU BURADA BAŞLATIRIZ. Eskiden yalnız kuyruğa alıp `start()`i beklerdik; sohbet
+            // arayüzü WebView'a taşındıktan sonra `start()` ARTIK ÇAĞRILMIYOR ve kimlik sonsuza
+            // kadar kuyrukta kalıyordu — müşteri operatörde hep anonim görünürdü. Ziyaretçi jetonu
+            // WebView ile PAYLAŞILAN depoda tutulduğu için burada üretilen oturum, sohbet açıldığında
+            // widget'ın devam ettirdiği oturumun TA KENDİSİDİR.
             bekleyenKimlik = k
-            return true // kuyruğa alındı; start() gönderecek
+            start() // başarılıysa kuyruğu kendisi boşaltır
+            return store.read() != null
         }
         return gonderKimlik(k)
     }
@@ -247,6 +253,10 @@ class NsuppSession(
      * göndermek onu yalan yapardı.
      */
     fun trackEvent(name: String): Boolean {
+        // Olay TETİKLEYİCİ koşullarını besler ve sohbet açılmadan ÖNCE de anlamlıdır (proaktif
+        // mesaj tam da bunun için var). Oturum yoksa üretiriz — yoksa uygulamada tetikleyiciler
+        // hiç çalışmazdı.
+        if (store.read() == null) start()
         val token = store.read() ?: return false
         return try { api.trackEvent(token, name); true } catch (_: Exception) { false }
     }

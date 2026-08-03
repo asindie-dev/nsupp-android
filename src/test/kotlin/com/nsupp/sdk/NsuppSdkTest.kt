@@ -182,25 +182,6 @@ class NsuppSessionTest {
         assertEquals("yeni", s.state.conversationId)
     }
 
-    @Test fun `oturum ACILMADAN verilen kimlik BEKLETILIR ve start sonrasi gonderilir`() {
-        // Uygulamalar kimliği giriş anında verir; oturum ise sohbet ekranı ilk açıldığında doğar.
-        // Kuyruk olmasaydı identify sessizce düşer, müşteri operatörde ANONİM görünürdü.
-        val http = SahteHttp(mutableListOf(
-            200 to """{"data":{"visitorToken":"vt","messages":[]}}""",
-            200 to """{"data":{"ok":true,"identity":"valid","identitySource":"signature"}}""",
-        ))
-        val s = NsuppSession(NsuppApi(cfg, http), InMemoryTokenStore())
-        s.identify("a@b.com", name = "Ada", signature = "imza", attributes = mapOf("segments" to listOf("vip")))
-        assertEquals(0, http.istekler.size, "oturum yokken ağa çıkıldı")
-        s.start()
-        assertEquals("/identify", http.istekler.last().first.substringAfterLast("pk_1"))
-        val govde = http.songovde!!
-        assertTrue(govde.contains("\"email\":\"a@b.com\""), govde)
-        assertTrue(govde.contains("\"signature\":\"imza\""), govde)
-        assertTrue(govde.contains("\"segments\":[\"vip\"]"), "segment dizisi kodlanmadı: $govde")
-        assertEquals("signature", s.state.identityStatus)
-    }
-
     @Test fun `kimliksiz oznitelik yazma SESSIZCE YUTULMAZ`() {
         // Öznitelikler kişi kaydında yaşar; kişi e-posta ile doğar. Sessiz no-op, ayarın yalan
         // söylemesiyle aynı şeydir.
@@ -209,13 +190,6 @@ class NsuppSessionTest {
         s.start()
         assertTrue(!s.setSessionData(mapOf("plan" to "pro")), "kimliksiz yazma başarılı sayıldı")
         assertTrue(s.state.error!!.contains("identify"), "sebep gösterilmedi: ${s.state.error}")
-    }
-
-    @Test fun `oturum yokken olay gonderilmez (olay BIR ANA aittir)`() {
-        val http = SahteHttp(mutableListOf())
-        val s = NsuppSession(NsuppApi(cfg, http), InMemoryTokenStore())
-        assertTrue(!s.trackEvent("Signup"))
-        assertEquals(0, http.istekler.size)
     }
 
     @Test fun `cikis kimligi de temizler`() {
@@ -334,6 +308,36 @@ class NsuppSessionTest {
         s.start()
         assertNull(s.state.brandColor)
         assertEquals("X", s.state.config?.name)
+    }
+
+    @Test fun `oturum YOKKEN identify OTURUMU ACAR ve kimligi gonderir`() {
+        // 🔴 SÖZLEŞME DEĞİŞTİ: eskiden kimlik kuyruğa alınıp `start()` beklenirdi. Sohbet arayüzü
+        // WebView'a taşındıktan sonra `start()` ARTIK ÇAĞRILMIYOR → kimlik sonsuza kadar kuyrukta
+        // kalıyor ve müşteri operatörde hep anonim görünüyordu. Artık oturum burada açılır.
+        val http = SahteHttp(mutableListOf(
+            200 to """{"data":{"visitorToken":"vt","messages":[]}}""",
+            200 to """{"data":{"ok":true,"identity":"valid","identitySource":"signature"}}""",
+        ))
+        val store = InMemoryTokenStore()
+        val s = NsuppSession(NsuppApi(cfg, http), store)
+        assertTrue(s.identify("a@b.com", name = "Ada", signature = "imza", attributes = mapOf("segments" to listOf("vip"))))
+        assertEquals("vt", store.read(), "oturum açılmadı → kimliğin bağlanacağı ziyaretçi yok")
+        assertEquals("/identify", http.istekler.last().first.substringAfterLast("pk_1"))
+        val govde = http.songovde!!
+        assertTrue(govde.contains("\"email\":\"a@b.com\""), govde)
+        assertTrue(govde.contains("\"segments\":[\"vip\"]"), "segment dizisi kodlanmadı: $govde")
+        assertEquals("signature", s.state.identityStatus)
+    }
+
+    @Test fun `oturum YOKKEN trackEvent OTURUMU ACAR (proaktif tetikleyiciler sohbet acilmadan calisir)`() {
+        val http = SahteHttp(mutableListOf(
+            200 to """{"data":{"visitorToken":"vt","messages":[]}}""",
+            200 to """{"data":{"ok":true}}""",
+        ))
+        val s = NsuppSession(NsuppApi(cfg, http), InMemoryTokenStore())
+        assertTrue(s.trackEvent("Signup"), "oturum yokken olay düştü → uygulamada tetikleyici hiç çalışmaz")
+        assertEquals(2, http.istekler.size)
+        assertEquals("/event", http.istekler.last().first.substringAfterLast("pk_1"))
     }
 
     @Test fun `bos mesaj gonderilmez`() {

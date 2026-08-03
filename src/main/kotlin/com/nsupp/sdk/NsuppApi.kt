@@ -119,16 +119,16 @@ data class NsuppPublicConfig(
     val textLocales: Map<String, Map<String, String>> = emptyMap(),
 ) {
     /**
-     * Metin çözümü — **widget.js ile AYNI sıra**: `textLocales[dil][anahtar]` → `texts[anahtar]`
-     * → gömülü karşılık. Sırayı değiştirmek, panelde dile özgü metin yazan satıcının mobilde
-     * başka bir şey görmesi demekti.
-     */
-    /**
      * Çalışma alanının dili (`tr`/`en`). Panelde ayarlanan dil CİHAZ dilinden ÖNCE gelir — web
      * widget'ı da böyle davranır; aksi hâlde aynı çalışma alanı iki yüzeyde iki dil konuşurdu.
      */
     val language: String get() = locale ?: "tr"
 
+    /**
+     * Metin çözümü — **widget.js ile AYNI sıra**: `textLocales[dil][anahtar]` → `texts[anahtar]`
+     * → gömülü karşılık. Sırayı değiştirmek, panelde dile özgü metin yazan satıcının mobilde
+     * başka bir şey görmesi demekti.
+     */
     fun text(key: String, tr: String, en: String): String {
         textLocales[language]?.get(key)?.takeIf { it.isNotBlank() }?.let { return it }
         texts[key]?.takeIf { it.isNotBlank() }?.let { return it }
@@ -293,8 +293,14 @@ class NsuppApi(private val config: NsuppConfig, private val http: NsuppHttp) {
     /**
      * Ziyaretçiyi tanıt.
      *
-     * [signature]: sunucunuzda `HMAC-SHA256(email, identity_secret)` ile üretilir — **uygulamanın
-     * içinde ASLA üretmeyin**, sır istemciye gömülürse doğrulama anlamını yitirir.
+     * [signature]: sunucunuzda üretilir — **uygulamanın içinde ASLA üretmeyin**, sır istemciye
+     * gömülürse doğrulama anlamını yitirir. İki biçim kabul edilir:
+     * · `HMAC-SHA256(email, identity_secret)` hex — SÜRESİZDİR.
+     * · KISA ÖMÜRLÜ HS256 JWT (SDK: `signIdentityJwt` / `sign_identity_jwt` / `SignIdentityJwt`).
+     *
+     * MOBİLDE JWT'Yİ TERCİH EDİN: süresiz bir imza cihazda uzun süre durur ve sızarsa o kişi olarak
+     * SONSUZA DEK davranılabilir; iptalin tek yolu çalışma alanının anahtarını döndürmek, yani BÜTÜN
+     * kullanıcıları aynı anda kırmaktır. JWT `exp` taşır, kendiliğinden ölür.
      *
      * [attributes]: özel öznitelikler (plan, kullanıcı-id, `segments`…). `$` ve `_` önekli
      * anahtarlar sunucuda düşürülür (ayrılmış ad alanları).
@@ -316,6 +322,7 @@ class NsuppApi(private val config: NsuppConfig, private val http: NsuppHttp) {
         return IdentifyResult(
             identity = Json.string(govde, "identity"),
             identitySource = Json.string(govde, "identitySource"),
+            identityReason = Json.string(govde, "identityReason"),
         )
     }
 
@@ -324,7 +331,16 @@ class NsuppApi(private val config: NsuppConfig, private val http: NsuppHttp) {
      * (`valid`/`invalid`/`unsigned`/`no_secret`); [identitySource] = kimliği hangi yolun kurduğu.
      * ENTEGRASYON TEŞHİSİ: "neden doğrulanmadı" sorusunun tek cevabı burada.
      */
-    data class IdentifyResult(val identity: String?, val identitySource: String?)
+    data class IdentifyResult(
+        val identity: String?,
+        val identitySource: String?,
+        /**
+         * 0214: JWT/JWKS TANISI (`expired`, `alg_mismatch`, `not_jwt`, `jwks_unreachable`…).
+         * [identity] tek başına yetmez: `no_secret` hem "anahtar üretmediniz" hem "JWKS ucunuza
+         * ulaşılamadı" olabilir ve ikisinin AKSİYONU tamamen farklıdır.
+         */
+        val identityReason: String? = null,
+    )
 
     /** Özel olay bildir (kampanya/tetikleyici koşulları + kişi zaman-çizelgesi). */
     fun trackEvent(token: String, name: String) {

@@ -37,6 +37,29 @@ val config = NsuppConfig(
 > edebilmek ve konuşmanın hangi uygulamadan geldiğini bilmek. Konuşan **kişinin** kim olduğunu
 > güvenceye almak için imzalı kimlik doğrulaması gerekir; bu anahtar onun yerine geçmez.
 
+## Mimari: sohbet arayüzü WEB WIDGET'ININ KENDİSİ
+
+Bu SDK yerel bir sohbet ekranı çizmez. Sohbeti bir WebView'da **aynı `widget.js`** ile gösterir —
+web sitenizde çalışan widget'ın ta kendisi.
+
+**Neden:** widget ayarı çalışma alanı başına tektir ve web/mobil/masaüstünde aynı görünmelidir
+(ön-sohbet formu, Makaleler sekmesi, hamburger menüsü, powered-by, CSAT, kesinti bandı, hızlı
+yanıtlar, dosya eki). Bunu yerel arayüzü ikinci ve üçüncü kez yazarak tutmak mümkün değildi:
+`widget.js` ~4900 satır, yerel ekran 153'tü ve çalışma alanı ayarından yalnız renk okunuyordu —
+yüzeyin **%92'si eksikti**. Her yeni widget özelliği üç yerde yazılsaydı "eksiksiz aynısı" vaadi
+kod düzeyinde yalan olurdu. Bu alandaki lider ürünün iOS SDK'sı da aynı yolu izliyor: kendi web
+istemcisini WebView'da açar, powered-by bağlantısı dahil her öğe web widget'ından gelir.
+
+**Yerel tarafın işi** sohbeti çizmek değil, WebView'ın yapamadıklarını üstlenmektir: uygulama
+anahtarı ve ziyaretçi jetonu, anlık bildirim kaydı, bildirimden derin bağlantı, yükleme/hata
+durumu, dış bağlantıların sistem tarayıcısında açılması.
+
+**Launcher balonu yok** (bilinçli): hiçbir lider mobil SDK zorunlu köşe balonu çizmiyor. Balon
+şeffaf tam-ekran katman ve dokunma geçirgenliği ister; yanlış yapıldığında sizin kendi arayüzünüzü
+tıklanamaz bırakır. Siz kendi "Destek" düğmenizi koyarsınız, SDK sohbeti **açık ve tam ekran** açar.
+
+---
+
 ## Kurulum
 
 `settings.gradle.kts` — modülü dahil edin (yayınlanmış artefakt için aşağıdaki nota bakın):
@@ -70,21 +93,16 @@ Gizli değildir; tarayıcıda da açıkta durur.
 
 ## Sohbeti açmak
 
-Hazır ekran:
+Kendi "Destek" düğmenizden:
 
 ```kotlin
 NsuppChatActivity.start(context)
 ```
 
-Kendi ekranınıza gömmek isterseniz:
-
-```kotlin
-setContent {
-    MaterialTheme {
-        NsuppChatScreen()   // renk/tipografi sizin temanızdan gelir
-    }
-}
-```
+Sohbet açık ve tam ekran gelir; içinde web widget'ının kendisi çalışır. **Yerel bir sohbet ekranı
+çizmeyin** — widget'ın görünümü ve işlevi çalışma alanı ayarından gelir; yerel bir kopya "tek
+noktadan yönetim" vaadini kırar. `NsuppSession` sohbet DIŞI entegrasyon içindir (kimlik, anlık
+bildirim, kendi ekranınızda göstermek istediğiniz makaleler).
 
 ## Anlık bildirim (FCM)
 
