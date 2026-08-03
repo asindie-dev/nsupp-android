@@ -90,9 +90,13 @@ object Nsupp {
     val current: NsuppSession?
         get() = session
 
-    fun init(context: Context, apiBase: String, publicKey: String) {
+    /**
+     * @param appKey panelde Ayarlar → Uygulamalar'dan üretilen uygulama anahtarı. Alan adı kilidi
+     *   AÇIK bir çalışma alanında yerel yüzeyin TEK geçiş yoludur; kilit kapalıysa boş bırakılabilir.
+     */
+    fun init(context: Context, apiBase: String, publicKey: String, appKey: String? = null) {
         if (session != null) return
-        val cfg = NsuppConfig(apiBase, publicKey)
+        val cfg = NsuppConfig(apiBase, publicKey, appKey = appKey)
         val s = NsuppSession(NsuppApi(cfg, AndroidHttp()), PrefsTokenStore(context, publicKey))
         session = s
         // 🔴 TEK İŞ PARÇACIĞI: NsuppSession'ın durumu (state/seen/lastTs) korumasız alanlar — saf

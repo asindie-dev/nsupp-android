@@ -21,6 +21,21 @@ data class NsuppConfig(
      * "react-native" yapar; başka türlü bu paketi saran katman "android" gibi görünürdü.
      */
     val sdkPlatform: String = "android",
+    /**
+     * UYGULAMA ANAHTARI (0213) — panelde Ayarlar → Uygulamalar'dan üretilir ve BİR KEZ gösterilir.
+     *
+     * NİÇİN ZORUNLU HÂLE GELDİ: alan adı kilidi TARAYICI kontrolüdür ve yerel istemci `Origin`
+     * göndermez, dolayısıyla muafiyet gerekiyordu. Eskiden muafiyetin dayanağı `sdkPlatform`
+     * BAŞLIĞIYDI — yani bir BEYAN: curl da aynı başlığı yazıp geçebiliyordu. Artık dayanak
+     * doğrulanabilir bir anahtar; sunucu onu kaydına çözer ve kaydın O çalışma alanına ait olmasını
+     * arar. Anahtar sızarsa panelden DÖNDÜRÜLÜR ve eskisi anında geçersizleşir.
+     *
+     * DÜRÜST SINIR: bu anahtar uygulamanın paketinden çıkarılabilir (APK açılabilir). Kişi-düzeyi
+     * güvence için imzalı kimlik doğrulaması gerekir; bu anahtar onun YERİNE GEÇMEZ.
+     *
+     * Alan adı kilidi KAPALI bir çalışma alanında boş bırakılabilir; kilit AÇIKSA zorunludur.
+     */
+    val appKey: String? = null,
 ) {
     /** Sondaki '/' kırpılır: "https://api.test//widget/..." bazı ters-proxy'lerde 404 verir. */
     val base: String get() = apiBase.trimEnd('/')
@@ -131,6 +146,8 @@ class NsuppApi(private val config: NsuppConfig, private val http: NsuppHttp) {
             // `Origin` göndermez. Sunucu bu başlığı görünce kilidi uygulamaz.
             "x-nsupp-sdk-platform" to config.sdkPlatform,
         )
+        // Uygulama anahtarı: alan adı kilidi açık çalışma alanlarında yerel yüzeyin TEK geçiş yolu.
+        config.appKey?.let { headers["x-nsupp-app-key"] = it }
         // OTURUM SIRRI BAŞLIKTA: query string erişim/proxy/CDN loglarına düşer ve bu jeton
         // oturumun TEK kimliğidir (ele geçiren konuşmayı okur, ziyaretçi adına yazar).
         if (visitorToken != null) headers["x-nsupp-visitor-token"] = visitorToken
@@ -277,10 +294,13 @@ class NsuppApi(private val config: NsuppConfig, private val http: NsuppHttp) {
 
     private fun kbCall(path: String): String {
         val url = "${config.base}/cof/kb/public/${config.publicKey}$path"
-        val (code, text) = http.request(url, "GET", null, mapOf(
+        val headers = mutableMapOf(
             "content-type" to "application/json",
             "x-nsupp-sdk-platform" to config.sdkPlatform,
-        ))
+        )
+        // Uygulama anahtarı: alan adı kilidi açık çalışma alanlarında yerel yüzeyin TEK geçiş yolu.
+        config.appKey?.let { headers["x-nsupp-app-key"] = it }
+        val (code, text) = http.request(url, "GET", null, headers)
         if (code !in 200..299) {
             // Kilitli KB'de sunucu `code: "kb_locked"` der; olduğu gibi taşınır ki uygulama
             // "makale yok" ile "makaleler kilitli"yi ayırt edebilsin.

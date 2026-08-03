@@ -11,6 +11,32 @@ yoktur, dolayısıyla "webde çalışıyor, mobilde çalışmıyor" sınıfı ay
 
 ---
 
+## Uygulama anahtarı (alan adı kilidi açıksa ZORUNLU)
+
+Alan adı kilidi bir **tarayıcı** kontrolüdür: web widget'ı `Origin` başlığı gönderir, yerel uygulama
+göndermez. Bu yüzden yerel yüzeyin kendi kimliği vardır — **uygulama anahtarı**.
+
+Panelde **Ayarlar → Uygulamalar** → platform + ad seçip *Uygulama ekle*. Anahtar **bir kez**
+gösterilir; kopyalayıp yapılandırmaya koyun:
+
+```kotlin
+val config = NsuppConfig(
+    apiBase = "https://api.nsupp.com",
+    publicKey = "PUBLIC_KEY",
+    appKey = "nsupp_app_...",  // Ayarlar → Uygulamalar
+)
+```
+
+- Alan adı kilidi **kapalı** bir çalışma alanında `appKey` verilmeyebilir.
+- Kilit **açıkken** anahtarsız istek `403 domain_locked` alır.
+- Anahtar sızarsa panelden **döndürün**: eskisi anında geçersizleşir, uygulama yeni sürüm çıkana
+  kadar bağlanamaz.
+
+> **Dürüst sınır.** Uygulamanıza gömülen anahtar bir sır değildir — APK açılarak çıkarılabilir.
+> Bu anahtarın verdiği şey: kodun gelişigüzel kopyalanmasını zorlaştırmak, sızıntıda **iptal**
+> edebilmek ve konuşmanın hangi uygulamadan geldiğini bilmek. Konuşan **kişinin** kim olduğunu
+> güvenceye almak için imzalı kimlik doğrulaması gerekir; bu anahtar onun yerine geçmez.
+
 ## Kurulum
 
 `settings.gradle.kts` — modülü dahil edin (yayınlanmış artefakt için aşağıdaki nota bakın):
