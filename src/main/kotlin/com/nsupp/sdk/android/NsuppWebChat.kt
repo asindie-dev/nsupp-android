@@ -210,7 +210,10 @@ class NsuppWebChat(
         store.write(null)
         kurtarmaDenendi = false
         val wv = webView
-        if (originKurali != null && ozelliklerDestekli()) {
+        // `scriptHandler == null` + canlı WebView = köprü kurulurken İSTİSNA oldu: ortada
+        // tazelenecek script yok, dolayısıyla bu dal hiçbir şey temizlemeden döner ve çıkış
+        // SESSİZCE yalan söylerdi. O durumda aşağıdaki sayfa-bağlamı temizliğine düşülür.
+        if (originKurali != null && ozelliklerDestekli() && (wv == null || scriptHandler != null)) {
             // Script yeniden eklenince (jeton artık null) başına `localStorage.clear()` gelir ve
             // yeni belge yüklenmeden ÖNCE çalışır. WebView henüz yaratılmadıysa yapılacak bir şey
             // yok: bir sonraki `createWebView` zaten temizleyen script'i kurar.
@@ -331,8 +334,9 @@ class NsuppWebChat(
             // üretir ve geçmiş kaybolurdu.
             if (jeton.isEmpty()) return
             store.write(jeton)
-            // WebView'a yalnız kendi iş parçacığından dokunulur; mesajın hangi iş parçacığında
-            // geldiği dokümante değil.
+            // `onPostMessage` androidx API yüzeyinde `@UiThread`tir, tazeleme çağrısı da öyle;
+            // yine de kuyruğa alınıyor: geri-çağrımın İÇİNDE dinleyici/script topolojisini
+            // değiştirmek yerine mesaj işi bittikten sonra yapmak sürprizsizdir.
             view.post { scriptiTazele() }
         }
     }

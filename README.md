@@ -264,7 +264,7 @@ src/main/kotlin/com/nsupp/sdk/
 npm run test:android-sdk
 ```
 
-55 test koşar (JSON kenar durumları ve derinlik gölgelemesi, jeton sızıntısı, tekilleme, imleç
+56 test koşar (JSON kenar durumları ve derinlik gölgelemesi, jeton sızıntısı, tekilleme, imleç
 kayması, kimlik kuyruğu, ek/bot-seçimi çözümü, CSAT, kısıtlı oturum, kalıcı/geçici hata ayrımı). Bu betik `kotlinc` kullanır — Gradle/Android SDK gerektirmez.
 
 **WebView kabuğunun güvenlik sınırı da burada koşar.** `NsuppWebChat` gerçek `createWebView`
