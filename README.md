@@ -3,6 +3,9 @@
 Satıcının Android uygulamasına nsupp destek sohbetini gömer: mesajlaşma, çoklu konuşma,
 LiveTranslate çevirisi ve FCM anlık bildirimi.
 
+React Native / Expo kullanıyorsanız bu paketi doğrudan kullanmayın: `@nsupp/react-native-sdk` bunu
+sarar ve JS'ten aynı yüzeyi verir.
+
 Web widget'ı ile **aynı sunucu uçlarını** konuşur (`/widget/:publicKey/…`) — ayrı bir mobil API
 yoktur, dolayısıyla "webde çalışıyor, mobilde çalışmıyor" sınıfı ayrışma olmaz.
 
@@ -36,7 +39,7 @@ class App : Application() {
 }
 ```
 
-`publicKey` = panelde **Chatbox → Kurulum** ekranındaki gömme kodunda geçen `data-public-key`.
+`publicKey` = panelde **Ayarlar → Kurulum ve Entegrasyonlar** ekranındaki gömme kodunda geçen `data-public-key`.
 Gizli değildir; tarayıcıda da açıkta durur.
 
 ## Sohbeti açmak
@@ -96,6 +99,51 @@ override fun onMessageReceived(m: RemoteMessage) {
 
 ---
 
+## Kullanıcıyı tanıtma
+
+```kotlin
+// Kullanıcı GİRİŞ YAPTIĞI ANDA çağırın — sohbet ekranını beklemeyin.
+Nsupp.identify(
+    email = "ada@ornek.com",
+    name = "Ada Lovelace",
+    signature = imzaSunucudanGeldi,          // HMAC-SHA256(email, identity_secret)
+    attributes = mapOf("plan" to "pro", "segments" to listOf("vip")),
+)
+```
+
+Oturum henüz yoksa kimlik **bekletilir** ve sohbet ilk açıldığında gönderilir. Kuyruk olmasaydı
+çağrı sessizce düşer, müşteri operatörde anonim görünür, VIP/segment yönlendirmesi hiç çalışmazdı.
+
+**`signature` sunucunuzda üretilir.** Uygulamaya gömülen bir sır doğrulamayı anlamsız kılar.
+`NsuppState.identityStatus` sunucunun teşhisini taşır (`valid` / `invalid` / `unsigned` /
+`no_secret`) — "neden doğrulanmadı" sorusunun cevabı oradadır.
+
+## Tüm yüzey
+
+```kotlin
+Nsupp.init(context, apiBase, publicKey)
+Nsupp.send(text) { ok -> … }                   // başarısızsa false
+Nsupp.identify(email, name, signature, attributes)
+Nsupp.setSessionData(mapOf("sonSiparis" to "#1042"))   // önce identify gerekir
+Nsupp.setSegments(listOf("vip"))               // attributes.segments'i DEĞİŞTİRİR
+Nsupp.trackEvent("Checkout")
+Nsupp.runTrigger("hosgeldin")
+Nsupp.rate(5, "hızlıydı")                      // state.pendingRating true iken
+Nsupp.registerPushToken(fcmToken)
+Nsupp.reset()                                  // ÇIKIŞTA çağırın
+```
+
+**Çıkışta `reset()` çağırın.** Ziyaretçi jetonu kimliğe değil **cihaza** bağlıdır; çağırmazsanız
+paylaşılan bir cihazda sonraki kullanıcı öncekinin sohbet geçmişini açar.
+
+**CSAT:** konuşma çözülüp puanlanmadıysa `pendingRating` true olur ve hazır ekran 1–5 sorar. Kendi
+arayüzünüzde yok sayarsanız mobil kanal memnuniyet ölçümünün dışında kalır.
+
+**Ekler ve bot seçimleri** çizilir (`NsuppMessage.attachments`, `pickerChoices`). Tanımadığımız
+içerik türünde balon boş bırakılmaz, "gösterilemiyor" yazar — sessiz boşluk teşhis edilemez.
+
+**Metinler cihaz dilini izler** (tr/en) — kapsam bilinçli olarak ürünün geri kalanıyla aynı.
+
 ## Bilinmesi gerekenler
 
 **Ziyaretçi jetonu `SharedPreferences`'ta durur, `EncryptedSharedPreferences`'ta değil.**
@@ -140,8 +188,8 @@ src/main/kotlin/com/nsupp/sdk/
 npm run test:android-sdk
 ```
 
-18 test koşar (JSON kenar durumları, jeton sızıntısı, tekilleme, boş mesaj, kısıtlı oturum,
-yoklama hatasının durumu bozmaması). Bu betik `kotlinc` kullanır — Gradle/Android SDK gerektirmez.
+38 test koşar (JSON kenar durumları ve derinlik gölgelemesi, jeton sızıntısı, tekilleme, imleç
+kayması, kimlik kuyruğu, ek/bot-seçimi çözümü, CSAT, kısıtlı oturum, kalıcı/geçici hata ayrımı). Bu betik `kotlinc` kullanır — Gradle/Android SDK gerektirmez.
 Android kabuğunun derlenmesi Gradle işidir (`build.gradle.kts`).
 
 ## Yayın durumu
