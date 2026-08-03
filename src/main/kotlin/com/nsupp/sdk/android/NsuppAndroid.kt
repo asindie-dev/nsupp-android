@@ -206,6 +206,19 @@ object Nsupp {
         session?.reset()
     }
 
+    /**
+     * Yeni bir konu başlat — önceki konular KAPANMAZ (çoklu konuşma).
+     * Konuşma İLK MESAJLA doğar; bu çağrı ekranı temizler ve sonraki gönderime "yeni konu" bayrağı iliştirir.
+     */
+    fun startNewConversation() {
+        session?.startNewConversation()
+    }
+
+    /** Var olan bir konuya geç ([conversations] listesinden gelen id). */
+    fun openConversation(id: String) {
+        session?.openConversation(id)
+    }
+
     suspend fun conversations() = withContext(Dispatchers.IO) { session?.conversations() ?: emptyList() }
 
     /**

@@ -129,6 +129,8 @@ Nsupp.setSegments(listOf("vip"))               // attributes.segments'i DEĞİŞ
 Nsupp.trackEvent("Checkout")
 Nsupp.runTrigger("hosgeldin")
 Nsupp.rate(5, "hızlıydı")                      // state.pendingRating true iken
+Nsupp.startNewConversation()                   // ayrı konu; öncekiler KAPANMAZ
+Nsupp.openConversation(id)
 Nsupp.registerPushToken(fcmToken)
 Nsupp.reset()                                  // ÇIKIŞTA çağırın
 ```
