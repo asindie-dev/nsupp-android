@@ -3,13 +3,20 @@ package com.nsupp.sdk.android
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.Uri
-import android.webkit.JavascriptInterface
+import android.util.Log
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.webkit.JavaScriptReplyProxy
+import androidx.webkit.ScriptHandler
+import androidx.webkit.WebMessageCompat
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import com.nsupp.sdk.NsuppConfig
 import com.nsupp.sdk.NsuppTokenStore
 import org.json.JSONObject
@@ -28,6 +35,16 @@ import org.json.JSONObject
  * Kabuk sohbetten HİÇBİR ŞEY çizmez. Yalnız WebView'ın yapamadıklarını üstlenir: uygulama
  * anahtarını/jetonu sayfaya vermek, sayfadan gelen jetonu kalıcı saklamak, hata durumunu
  * göstermek, dış bağlantıları sistem tarayıcısına yollamak.
+ *
+ * ── GÜVENLİK SINIRI ORIGIN'DİR, GEZİNME SÜZGECİ DEĞİL ────────────────────────────────────────
+ * Köprü `addJavascriptInterface` ile kurulmuyor: o API nesneyi javadoc'unun deyişiyle sayfanın
+ * "all frames ... including all the iframes" içine enjekte eder ve `removeJavascriptInterface`
+ * ancak "next (re)loaded" belgede etkili olur — yani WEBVIEW'a bağlıdır, ORIGIN'e değil.
+ * `shouldOverrideUrlLoading` de sınır olamaz: javadoc'a göre `loadUrl` ile başlatılan gezinmeler
+ * ve POST istekleri için HİÇ ÇAĞRILMAZ. Bu yüzden kimlik `androidx.webkit`in origin-kurallı
+ * yollarıyla veriliyor (`addDocumentStartJavaScript` + `addWebMessageListener`): ikisi de yalnız
+ * origin'i eşleşen ÇERÇEVEye enjekte eder, dolayısıyla saldırgan belgesi ve opak origin'li
+ * (`data:`/`srcdoc`/sandbox) çerçeveler köprüyü GÖREMEZ.
  */
 class NsuppWebChat(
     private val config: NsuppConfig,
@@ -39,6 +56,16 @@ class NsuppWebChat(
 
     private var webView: WebView? = null
 
+    /** Document-start script'inin tutamacı — jeton değişince SÖKÜLÜP yeniden eklenir. */
+    private var scriptHandler: ScriptHandler? = null
+
+    /**
+     * Ana belge bir kez kendi origin'imizin dışına kaçtı mı (bkz. [onPageStarted] kurtarması).
+     * Bayrak DÖNGÜ koruması: ana sayfamız kalıcı olarak dışarı yönlendiriyorsa (yanlış yapılandırma)
+     * sonsuz "durdur → yeniden yükle" turu yerine kullanıcıya hata gösterilir.
+     */
+    private var kurtarmaDenendi = false
+
     /**
      * Widget'ın açılacağı adres — SUNUCUDAKİ host sayfası.
      *
@@ -46,6 +73,26 @@ class NsuppWebChat(
      * ve panelde yapılan değişiklik, satıcı yeni sürüm yayınlayana kadar mobilde görünmezdi.
      */
     val hostUrl: String get() = "${config.base}/widget/${config.publicKey}/app"
+
+    private val temel: Uri = Uri.parse(config.base)
+    private val temelSema: String? = temel.scheme?.lowercase()
+    private val temelHost: String? = temel.host?.lowercase()
+    private val temelPort: Int = etkinPort(temelSema, temel.port)
+
+    /**
+     * Köprünün bağlanacağı TEK origin kuralı — `scheme://host[:port]`.
+     *
+     * Ham `apiBase` metninden değil AYRIŞTIRILMIŞ parçalardan kurulur: taban bir yol taşıyorsa
+     * ("https://x/y") androidx kural biçimi geçersizdir ve API istisna atar. Kural üretilemiyorsa
+     * köprü HİÇ kurulmaz (fail-closed) — origin'e bağlanamayan köprü, yanlış origin'e açılan
+     * köprüdür.
+     */
+    private val originKurali: String? =
+        if ((temelSema == "https" || temelSema == "http") && !temelHost.isNullOrEmpty()) {
+            temelSema + "://" + temelHost + (if (temel.port > 0) ":" + temel.port else "")
+        } else {
+            null
+        }
 
     /**
      * ⚠️ `setJavaScriptEnabled` ZORUNLU: gösterdiğimiz şey bizim kendi widget'ımız ve KENDİ
@@ -65,14 +112,41 @@ class NsuppWebChat(
         // kötü niyetli bir sayfanın uygulama verisini okumasına yarayan klasik bir yüzeydir.
         wv.settings.allowFileAccess = false
         wv.settings.allowContentAccess = false
+        // Varsayılan zaten `false`, ama AÇIKÇA yazılıyor: açık olsaydı `target="_blank"` bağlantılar
+        // `onCreateWindow` sözleşmesine düşer ve gezinme süzgecimizin GÖRMEDİĞİ ikinci bir pencere
+        // açılabilirdi.
+        wv.settings.setSupportMultipleWindows(false)
         wv.setBackgroundColor(Color.TRANSPARENT)
 
-        // Köprü SENKRON okunur (document-start'tan itibaren hazır) — Android'de
-        // `evaluateJavascript` zamanlaması sayfa scriptleriyle YARIŞIR, bu yüzden JS arayüzü.
-        wv.addJavascriptInterface(Bridge(), "NsuppNative")
+        webView = wv
+        kurtarmaDenendi = false
+        // Köprü loadUrl'den ÖNCE kurulur: document-start script'i yalnız "çağrı döndükten SONRA
+        // yüklenmeye başlayan" çerçevelerde çalışır.
+        kopruyuKur(wv)
 
         wv.webViewClient = object : WebViewClient() {
-            override fun onPageFinished(view: WebView?, url: String?) { onLoaded?.invoke() }
+            override fun onPageFinished(view: WebView?, url: String?) {
+                // Kendi sayfamız gerçekten tamamlandı → kurtarma bayrağı sıfırlanır. Bayrağı
+                // onPageStarted'ta sıfırlamak döngü korumasını işlevsiz bırakırdı.
+                if (url != null && ayniOrigin(Uri.parse(url))) kurtarmaDenendi = false
+                onLoaded?.invoke()
+            }
+
+            override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                // İKİNCİ KATMAN: `shouldOverrideUrlLoading` javadoc'a göre POST istekleri ve
+                // `loadUrl` ile başlatılan gezinmeler için ÇAĞRILMAZ; bir form gönderimi saldırgan
+                // belgesine SESSİZCE ulaşabilir. Adres çubuğu olmayan tam ekranda bu, marka
+                // görünümlü kimlik-avı demektir — ana belge kendi origin'imizden çıktıysa geri alınır.
+                if (url == null || url == "about:blank") return
+                if (ayniOrigin(Uri.parse(url))) return
+                view?.stopLoading()
+                if (kurtarmaDenendi) {
+                    onLoadFailed?.invoke("sohbet adresi kendi sunucumuzun dışına yönlendiriyor")
+                    return
+                }
+                kurtarmaDenendi = true
+                view?.loadUrl(hostUrl)
+            }
 
             override fun onReceivedError(view: WebView?, req: WebResourceRequest?, err: WebResourceError?) {
                 // YALNIZ ana çerçevenin hatası kullanıcıya yansır; bir ikonun düşmesi "sohbet
@@ -81,20 +155,38 @@ class NsuppWebChat(
             }
 
             override fun shouldOverrideUrlLoading(view: WebView?, req: WebResourceRequest?): Boolean {
-                val url = req?.url?.toString() ?: return false
+                val uri = req?.url ?: return false
                 // Kendi adresimiz içeride kalır; DIŞ bağlantılar (makale, durum sayfası, powered-by)
                 // sistem tarayıcısında açılır — içeride açılsalardı kullanıcı sohbetten çıkar ve
                 // geri dönemezdi.
-                if (url.startsWith(config.base)) return false
+                if (ayniOrigin(uri)) return false
+                if (req?.isForMainFrame != true) {
+                    // ALT ÇERÇEVE dışarı çıkamaz, ama uygulama da AÇILMAZ: gizli bir
+                    // `<iframe src="birsey://…">` kullanıcı DOKUNMADAN başka uygulamayı tetiklerdi.
+                    return true
+                }
+                // ŞEMA ALLOWLIST'İ: bağlantının kaynağı uzak ve düşük yetkili yazarların elinde
+                // (KB makale gövdesi, sohbet mesajı). Şema süzülmezse uzak içerik cihazdaki başka
+                // bir uygulamanın kimliği doğrulanmış derin bağlantısını tetikleyebilir.
+                val sema = uri.scheme?.lowercase()
+                if (sema != "http" && sema != "https" && sema != "mailto" && sema != "tel") {
+                    Log.w(TAG, "izin verilmeyen şema, açılmadı: " + sema)
+                    return true
+                }
                 return try {
-                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    val niyet = Intent(Intent.ACTION_VIEW, uri)
+                    // CATEGORY_BROWSABLE: hedef kümesini "bağlantıdan açılmayı kabul etmiş"
+                    // bileşenlerle sınırlar; dışa açık olmayan iç bileşenler uzak içerikle
+                    // tetiklenemez.
+                    niyet.addCategory(Intent.CATEGORY_BROWSABLE)
+                    niyet.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    context.startActivity(niyet)
                     true
                 } catch (_: Exception) {
                     true // açacak uygulama yok → hiçbir şey yapma (WebView'da AÇMA)
                 }
             }
         }
-        webView = wv
         wv.loadUrl(hostUrl)
         return wv
     }
@@ -108,33 +200,171 @@ class NsuppWebChat(
     /**
      * Çıkışta: jetonu sil ve sayfayı sıfırla. Paylaşılan cihazda sonraki kullanıcı öncekinin
      * sohbetini AÇMAMALI.
+     *
+     * `clearHistory()` TEK BAŞINA YETMİYORDU: yalnız geri/ileri yığınını siler. Jeton asıl olarak
+     * WebView'ın localStorage'ında durur ve Android'de o depo DİSKE yazılır — süreç ölümünü de
+     * uygulama yeniden açılışını da atlatır. Temizlik bu yüzden sayfanın kendi bağlamında,
+     * sayfanın JS'i çalışmadan ÖNCE yapılır (bkz. [baslangicScripti]).
      */
     fun reset() {
         store.write(null)
-        webView?.clearHistory()
-        webView?.loadUrl(hostUrl)
+        kurtarmaDenendi = false
+        val wv = webView
+        if (originKurali != null && ozelliklerDestekli()) {
+            // Script yeniden eklenince (jeton artık null) başına `localStorage.clear()` gelir ve
+            // yeni belge yüklenmeden ÖNCE çalışır. WebView henüz yaratılmadıysa yapılacak bir şey
+            // yok: bir sonraki `createWebView` zaten temizleyen script'i kurar.
+            scriptiTazele()
+            wv?.clearHistory()
+            wv?.loadUrl(hostUrl)
+            return
+        }
+        if (wv != null) {
+            // Köprü kurulamadı (eski WebView sürümü): temizliği sayfa bağlamında çalıştır ve
+            // BİTİNCE yeniden yükle — sıra garantisi geri-çağrımdan gelir, tahminden değil.
+            wv.clearHistory()
+            wv.evaluateJavascript(TEMIZLE_JS) { wv.loadUrl(hostUrl) }
+            return
+        }
+        // SON ÇARE: ne köprü ne canlı WebView var. `deleteAllData` bir SINGLETON üzerinden çalışır
+        // ve UYGULAMA GENELİdir (satıcının kendi WebView verisi de gider) — bu yüzden en sonda.
+        try {
+            WebStorage.getInstance().deleteAllData()
+        } catch (e: Exception) {
+            Log.w(TAG, "depo temizlenemedi: " + e)
+        }
     }
 
-    /** Sayfanın senkron okuduğu köprü. Yalnız `@JavascriptInterface` işaretli metotlar görünür. */
-    private inner class Bridge {
-        @JavascriptInterface
-        fun appKey(): String? = config.appKey
+    /** İki androidx yolu da destekleniyor mu — köprü ancak İKİSİ birden varsa kurulur. */
+    private fun ozelliklerDestekli(): Boolean = try {
+        WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT) &&
+            WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)
+    } catch (_: Throwable) {
+        false
+    }
 
-        @JavascriptInterface
-        fun visitorToken(): String? = store.read()
+    private fun kopruyuKur(wv: WebView) {
+        val kural = originKurali
+        if (kural == null) {
+            // Sessiz kilit yasak: yükleme de başarısız olacağı için kullanıcı `onLoadFailed`
+            // görecek, ama sebebi ancak bu iz söyler.
+            Log.w(TAG, "apiBase bir http(s) origin'ine ayrışmadı, köprü kurulmadı: " + config.base)
+            return
+        }
+        if (!ozelliklerDestekli()) {
+            // FAIL-CLOSED: origin'e bağlanamıyorsak köprüyü HİÇ kurmuyoruz. Bedeli README'de
+            // yazılı — alan adı kilidi açık kiracıda o cihazlarda sohbet anahtarsız kalır.
+            Log.w(TAG, "WebView sürümü origin-kurallı köprüyü desteklemiyor, köprü kurulmadı")
+            return
+        }
+        val kurallar = setOf(kural)
+        try {
+            WebViewCompat.addWebMessageListener(wv, "NsuppNative", kurallar, dinleyici)
+            scriptHandler = WebViewCompat.addDocumentStartJavaScript(wv, baslangicScripti(), kurallar)
+        } catch (e: Exception) {
+            scriptHandler = null
+            Log.w(TAG, "köprü kurulamadı: " + e)
+        }
+    }
 
-        @JavascriptInterface
-        fun postMessage(raw: String) {
-            try {
-                val o = JSONObject(raw)
-                if (o.optString("type") == "visitorToken") {
-                    val t = o.optString("token")
-                    // DOM storage kapalı olabilir; jetonu KABUK saklar, yoksa her açılış YENİ
-                    // ziyaretçi üretir ve geçmiş kaybolurdu.
-                    if (t.isNotEmpty()) store.write(t)
-                }
+    /**
+     * Sayfanın JS'inden ÖNCE çalışan kimlik script'i.
+     *
+     * DEĞİŞMEZ — **kabuk deposu tek doğruluk kaynağıdır**: kabukta jeton yoksa WebView'daki depo
+     * BAYATTIR (çıkış yapıldı ya da uygulama silinip kuruldu) ve sayfa onu okumadan silinir.
+     * Bu olmadan `widget.js` önce localStorage'a baktığı için ÖNCEKİ kullanıcının oturumu açılırdı.
+     */
+    private fun baslangicScripti(): String {
+        val jeton = store.read()
+        val anahtar = config.appKey
+        val temizle = if (jeton == null) TEMIZLE_JS else ""
+        val a = if (anahtar == null) "null" else JSONObject.quote(anahtar)
+        val j = if (jeton == null) "null" else JSONObject.quote(jeton)
+        return temizle + "window.NsuppApp={appKey:" + a + ",visitorToken:" + j + "};"
+    }
+
+    /**
+     * Script'i sök ve GÜNCEL jetonla yeniden ekle.
+     *
+     * Tazelenmezse aynı WebView içindeki bir yeniden yükleme, yeni alınmış jetonu "temizle + null"
+     * diyen BAYAT script'le silerdi — kullanıcı sohbetin ortasında geçmişini kaybederdi.
+     */
+    private fun scriptiTazele() {
+        val wv = webView ?: return
+        val kural = originKurali ?: return
+        if (scriptHandler == null) return // köprü hiç kurulmadı → tazelenecek script de yok
+        try {
+            scriptHandler?.remove()
+            scriptHandler = WebViewCompat.addDocumentStartJavaScript(wv, baslangicScripti(), setOf(kural))
+        } catch (e: Exception) {
+            Log.w(TAG, "script tazelenemedi: " + e)
+        }
+    }
+
+    /**
+     * Sayfadan gelen mesajlar. Kanal ORIGIN'e bağlıdır (`allowedOriginRules`), dolayısıyla buraya
+     * yalnız kendi sayfamız yazabilir.
+     */
+    private val dinleyici = object : WebViewCompat.WebMessageListener {
+        override fun onPostMessage(
+            view: WebView,
+            message: WebMessageCompat,
+            sourceOrigin: Uri,
+            isMainFrame: Boolean,
+            replyProxy: JavaScriptReplyProxy,
+        ) {
+            // Aynı origin'deki bir ALT ÇERÇEVE de kurala uyar; jetonu yalnız ana belge yazabilir.
+            if (!isMainFrame) return
+            val raw = try {
+                message.data
             } catch (_: Exception) {
+                null
+            } ?: return
+            val jeton = try {
+                val o = JSONObject(raw)
+                if (o.optString("type") != "visitorToken") return
+                o.optString("token")
+            } catch (_: Exception) {
+                return
             }
+            // DOM storage kapalı olabilir; jetonu KABUK saklar, yoksa her açılış YENİ ziyaretçi
+            // üretir ve geçmiş kaybolurdu.
+            if (jeton.isEmpty()) return
+            store.write(jeton)
+            // WebView'a yalnız kendi iş parçacığından dokunulur; mesajın hangi iş parçacığında
+            // geldiği dokümante değil.
+            view.post { scriptiTazele() }
+        }
+    }
+
+    /**
+     * "İçeride miyiz" kararı ÖNEK değil ORIGIN karşılaştırmasıdır.
+     *
+     * Önek testi (`startsWith`) `https://api.nsupp.com@saldirgan.example/` ve
+     * `https://api.nsupp.com.saldirgan.example/` adreslerini İÇERİDE sayıyordu. Ayrıştırmayı elle
+     * yapmıyoruz: `Uri.getHost` javadoc'una göre authority "bob@google.com" iken "google.com"
+     * döner — yani userinfo'yu platformun kendi ayrıştırıcısı eler.
+     *
+     * `lowercase()` locale-BAĞIMSIZDIR; `toLowerCase(Locale.getDefault())` Türkçe locale'de
+     * I→ı yapıp eşleşmeyi bozardı.
+     */
+    private fun ayniOrigin(u: Uri): Boolean {
+        if (originKurali == null) return false
+        val s = u.scheme?.lowercase() ?: return false
+        val h = u.host?.lowercase() ?: return false
+        return s == temelSema && h == temelHost && etkinPort(s, u.port) == temelPort
+    }
+
+    private companion object {
+        const val TAG = "NsuppWebChat"
+        const val TEMIZLE_JS = "try{localStorage.clear();sessionStorage.clear();}catch(e){}"
+
+        /** Açık port yoksa şemanın varsayılanı — `https://x` ile `https://x:443` aynı origin'dir. */
+        fun etkinPort(sema: String?, port: Int): Int = when {
+            port > 0 -> port
+            sema == "https" -> 443
+            sema == "http" -> 80
+            else -> -1
         }
     }
 }

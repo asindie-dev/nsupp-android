@@ -3,8 +3,13 @@
 #
 # NEDEN GRADLE DEĞİL: bu depoda Android SDK'sı kurulu değil; `gradle test` çalışamaz. Çekirdek
 # (NsuppApi/NsuppSession/Json) Android'e HİÇ dokunmadığı için kotlinc ile derlenip JVM'de koşar —
-# mantık böylece emülatörsüz KANITLANIR. Android kabuğu (`android/` paketi) burada derlenmez;
-# onun doğrulaması Gradle derlemesidir (build.gradle.kts).
+# mantık böylece emülatörsüz KANITLANIR.
+#
+# ANDROID KABUĞU DA KOŞAR (yalnız NsuppWebChat): kabuğun güvenlik sınırı — köprünün hangi origin'e
+# bağlandığı, gezinmenin nereye izin verdiği, çıkışın depoyu gerçekten silmesi — Gradle derlemesiyle
+# KANITLANMAZ; derleme yalnız "tipler tutuyor mu" der. Bu yüzden `tools/Shim*.kt` altında ürüne
+# GİRMEYEN Android saplamaları var ve testler GERÇEK `createWebView` kablolamasını koşturuyor.
+# İmza uyumunun kesin kanıtı yine Gradle derlemesidir (build.gradle.kts).
 set -e
 DIR=$(cd "$(dirname "$0")" && pwd)
 KT=${KOTLIN_LIB:-/opt/homebrew/opt/kotlin/libexec/lib}
@@ -17,9 +22,12 @@ OUT=$(mktemp -d)
 
 kotlinc -nowarn -Xallow-kotlin-package -cp "$KT/kotlin-test.jar" \
   "$DIR"/src/main/kotlin/com/nsupp/sdk/*.kt \
+  "$DIR"/src/main/kotlin/com/nsupp/sdk/android/NsuppWebChat.kt \
   "$DIR"/src/test/kotlin/com/nsupp/sdk/*.kt \
+  "$DIR"/src/test/kotlin/com/nsupp/sdk/android/*.kt \
   "$DIR"/tools/*.kt -d "$OUT"
 
 "$JAVA" -cp "$OUT:$KT/kotlin-stdlib.jar:$KT/kotlin-test.jar" \
   com.nsupp.sdk.tools.TestRunnerKt \
-  com.nsupp.sdk.JsonTest com.nsupp.sdk.NsuppApiTest com.nsupp.sdk.NsuppSessionTest
+  com.nsupp.sdk.JsonTest com.nsupp.sdk.NsuppApiTest com.nsupp.sdk.NsuppSessionTest \
+  com.nsupp.sdk.android.NsuppWebChatTest

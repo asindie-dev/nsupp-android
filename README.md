@@ -197,6 +197,31 @@ içerik türünde balon boş bırakılmaz, "gösterilemiyor" yazar — sessiz bo
 
 ## Bilinmesi gerekenler
 
+**Sohbet WebView'ı yalnız kendi origin'imizde çalışır ve kimlik ORIGIN'e bağlıdır.**
+Uygulama anahtarı ve ziyaretçi jetonu sayfaya `androidx.webkit`in origin-kurallı yollarıyla
+verilir; başka bir adrese giden bir belge (ya da gömülü bir alt çerçeve) bunları **göremez**.
+Bunun iki görünür sonucu var:
+
+- **Asgari WebView sürümü.** Cihazın WebView'ı `DOCUMENT_START_SCRIPT` ve `WEB_MESSAGE_LISTENER`
+  yeteneklerini desteklemiyorsa köprü **hiç kurulmaz** (fail-closed — eski, origin'e bağlanamayan
+  yolu kullanmayız). Sohbet yine açılır; ama **alan adı kilidi açık** bir çalışma alanında o
+  cihazlarda istekler anahtarsız gider ve `403 domain_locked` alır. Logcat'te `NsuppWebChat`
+  etiketiyle sebep yazar.
+- **`apiBase` bir origin olmalıdır** (`https://api.nsupp.com`), yol taşımamalıdır.
+
+**Dış bağlantılarda şema süzgeci var.** Sohbet/makale içeriğindeki bağlantılardan yalnız
+`http`, `https`, `mailto` ve `tel` sistem tarayıcısına/uygulamasına açılır. Uzak içeriğin cihazdaki
+başka bir uygulamanın derin bağlantısını tetiklemesi böylece engellenir; kendi `myapp://`
+şemanızı sohbete koyarsanız **açılmaz** (logcat'e uyarı düşer).
+
+**`reset()` WebView deposunu da temizler.** Jeton asıl olarak sayfanın `localStorage`'ında durur ve
+Android'de o depo diske yazılır. `reset()` kabuk deposunu boşaltır ve sayfa yeniden yüklenmeden
+**önce** çalışan bir script'le `localStorage`/`sessionStorage`'ı siler — kabuk deposu tek doğruluk
+kaynağıdır, dolayısıyla süreç öldükten sonra bile bayat oturum bir sonraki açılışta temizlenir.
+Yalnız köprü kurulamayan **ve** canlı bir WebView da olmayan durumda son çare olarak
+`WebStorage.deleteAllData()` çağrılır; bu çağrı **uygulama genelidir** (sizin kendi WebView'larınızın
+verisi de gider).
+
 **Ziyaretçi jetonu `SharedPreferences`'ta durur, `EncryptedSharedPreferences`'ta değil.**
 Jeton bir kimlik doğrulama sırrı değil, anonim oturum tanıtıcısıdır (web'de `localStorage`'ın
 karşılığı). Şifreli/yedeklenen bir yere koymak, kullanıcı uygulamayı silip yeniden kurduğunda eski
@@ -239,9 +264,14 @@ src/main/kotlin/com/nsupp/sdk/
 npm run test:android-sdk
 ```
 
-38 test koşar (JSON kenar durumları ve derinlik gölgelemesi, jeton sızıntısı, tekilleme, imleç
+55 test koşar (JSON kenar durumları ve derinlik gölgelemesi, jeton sızıntısı, tekilleme, imleç
 kayması, kimlik kuyruğu, ek/bot-seçimi çözümü, CSAT, kısıtlı oturum, kalıcı/geçici hata ayrımı). Bu betik `kotlinc` kullanır — Gradle/Android SDK gerektirmez.
-Android kabuğunun derlenmesi Gradle işidir (`build.gradle.kts`).
+
+**WebView kabuğunun güvenlik sınırı da burada koşar.** `NsuppWebChat` gerçek `createWebView`
+kablolamasıyla test edilir (köprünün bağlandığı origin, gezinme kararları, dış bağlantı şeması,
+çıkışta depo temizliği); Android API'leri `tools/Shim*.kt` altındaki — ürüne/AAR'a **girmeyen** —
+saplamalarla temsil edilir. Bu, derlemenin söyleyemediğini söyler; **imza uyumunun** kanıtı yine
+Gradle derlemesidir (`build.gradle.kts`).
 
 ## Yayın durumu
 

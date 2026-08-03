@@ -32,6 +32,11 @@ android {
 dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("androidx.activity:activity-compose:1.9.2")
+    // İSTİSNA DEĞİL, ZORUNLULUK: sohbet WebView'ında kimliği (uygulama anahtarı + ziyaretçi jetonu)
+    // ORIGIN'e bağlayabilen tek dokümante yol bu kütüphanededir (`addDocumentStartJavaScript` +
+    // `addWebMessageListener`). Platformun kendi `addJavascriptInterface`i köprüyü WebView'a bağlar,
+    // origin'e değil — sayfanın TÜM çerçevelerine açılır.
+    implementation("androidx.webkit:webkit:1.12.1")
     implementation(platform("androidx.compose:compose-bom:2024.09.02"))
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.ui:ui")
