@@ -7,6 +7,8 @@
 plugins {
     id("com.android.library")
     id("org.jetbrains.kotlin.android")
+    // Kotlin 2.x: Compose derleyicisi ARTIK eklenti; `composeOptions` yolu kaldırıldı.
+    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 android {
@@ -25,7 +27,6 @@ android {
     }
     kotlinOptions { jvmTarget = "11" }
     buildFeatures { compose = true }
-    composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
 }
 
 dependencies {

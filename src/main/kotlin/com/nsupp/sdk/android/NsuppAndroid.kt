@@ -99,7 +99,9 @@ object Nsupp {
         // Kotlin olması için bilinçli bir tercih. Çok-iş-parçacıklı bir IO havuzunda `send` ile
         // `pollOnce` çakışırsa mesaj kaybı ve bozuk imleç üretir. `limitedParallelism(1)` çekirdeği
         // seri tutar; iOS tarafında aynı güvenceyi `@MainActor` zaten sağlıyor.
-        scope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1))
+        @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+        val seriIO = Dispatchers.IO.limitedParallelism(1)
+        scope = CoroutineScope(SupervisorJob() + seriIO)
     }
 
     /**

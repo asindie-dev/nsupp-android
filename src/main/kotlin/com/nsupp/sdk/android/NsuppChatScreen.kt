@@ -19,7 +19,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.material3.Divider
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -127,7 +127,7 @@ fun NsuppChatScreen(modifier: Modifier = Modifier) {
                 item { Text("…", style = MaterialTheme.typography.bodyMedium) }
             }
         }
-        Divider()
+        HorizontalDivider()
         if (state.pendingRating) {
             // CSAT: konuşma çözüldü ve puan bekleniyor. Sormazsak mobil kanal memnuniyet ölçümünün
             // TAMAMEN dışında kalır (web'de sorulur, mobilde sorulmazdı).
@@ -136,7 +136,7 @@ fun NsuppChatScreen(modifier: Modifier = Modifier) {
                 Spacer(Modifier.weight(1f))
                 (1..5).forEach { p -> TextButton(onClick = { Nsupp.rate(p) }) { Text("$p") } }
             }
-            Divider()
+            HorizontalDivider()
         }
         Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
             TextField(
