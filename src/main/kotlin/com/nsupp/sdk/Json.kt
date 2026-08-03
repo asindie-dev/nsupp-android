@@ -117,6 +117,69 @@ internal object Json {
             )
         }
 
+    /**
+     * `/session` yanıtındaki `config` bloğunu çöz (görünüm + metinler).
+     *
+     * Metin haritaları DÜZ (anahtar → metin) olduğu için basit bir tarayıcı yeter; `textLocales`
+     * bir seviye daha derindir (dil → harita).
+     */
+    fun publicConfig(data: String): NsuppPublicConfig? {
+        val cfg = obj(data, "config")?.let { "{$it}" } ?: return null
+        val wc = obj(cfg, "widgetConfig")?.let { "{$it}" }
+        return NsuppPublicConfig(
+            name = string(cfg, "name"),
+            color = wc?.let { string(it, "color") },
+            locale = wc?.let { string(it, "locale") } ?: string(cfg, "defaultLanguage"),
+            logoUrl = string(cfg, "logoUrl"),
+            texts = wc?.let { obj(it, "texts")?.let { o -> stringMap("{$o}") } } ?: emptyMap(),
+            textLocales = wc?.let { obj(it, "textLocales")?.let { o -> localeMap("{$o}") } } ?: emptyMap(),
+        )
+    }
+
+    /** Düz `{"k":"v",…}` haritası (yalnız dize değerler; başka tür ATLANIR). */
+    fun stringMap(o: String): Map<String, String> {
+        val out = LinkedHashMap<String, String>()
+        for (k in topLevelKeys(o)) string(o, k)?.let { out[k] = it }
+        return out
+    }
+
+    /** `{"tr":{…},"en":{…}}` — dil → metin haritası. */
+    fun localeMap(o: String): Map<String, Map<String, String>> {
+        val out = LinkedHashMap<String, Map<String, String>>()
+        for (k in topLevelKeys(o)) obj(o, k)?.let { out[k] = stringMap("{$it}") }
+        return out
+    }
+
+    /** Bir nesnenin ÜST SEVİYE anahtar adları (iç içe olanlar sayılmaz). */
+    fun topLevelKeys(src: String): List<String> {
+        val hedef = if (src.trimStart().startsWith("{")) 1 else 0
+        val out = mutableListOf<String>()
+        var depth = 0; var i = 0; var inStr = false; var esc = false; var start = -1
+        while (i < src.length) {
+            val c = src[i]
+            if (esc) { esc = false; i++; continue }
+            if (inStr) {
+                if (c == '\\') esc = true
+                else if (c == '"') {
+                    inStr = false
+                    if (depth == hedef && start >= 0) {
+                        val after = skipWs(src, i + 1)
+                        if (after < src.length && src[after] == ':') out.add(src.substring(start, i))
+                    }
+                    start = -1
+                }
+                i++; continue
+            }
+            when (c) {
+                '{', '[' -> depth++
+                '}', ']' -> depth--
+                '"' -> { inStr = true; start = i + 1 }
+            }
+            i++
+        }
+        return out
+    }
+
     /** Dizi gövdesini üst düzey `{…}` parçalarına böler. */
     fun items(arrayBody: String?): List<String> {
         val s = arrayBody ?: return emptyList()

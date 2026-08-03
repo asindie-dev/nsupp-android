@@ -94,6 +94,48 @@ data class NsuppConversation(
     val lastAt: String? = null,
 )
 
+/**
+ * Çalışma alanının WIDGET YAPILANDIRMASI — panelde BİR KEZ yapılan ayar.
+ *
+ * 🔴 NEDEN BU VAR: mobil ekran başta uygulamanın kendi temasını kullanıyordu. Bu YANLIŞTI: widget
+ * ayarı çalışma alanı başına tektir ve web/mobil/masaüstü yüzeylerinde AYNI görünmelidir — marka
+ * rengi, satıcının yazdığı metinler, logo. Panelde ayarı değiştiren kişi mobilin de değişmesini
+ * bekler; değişmiyorsa ayar mobil için YALAN söylüyor demektir.
+ *
+ * Sunucu bunu `/session` yanıtında `config` altında zaten gönderiyordu; SDK'lar okumuyordu.
+ */
+data class NsuppPublicConfig(
+    /** Çalışma alanı adı (başlık metni verilmemişse gösterilir). */
+    val name: String? = null,
+    /** Marka rengi (`#rrggbb`). */
+    val color: String? = null,
+    /** Çalışma alanının dili (`tr` | `en`). */
+    val locale: String? = null,
+    /** Launcher logosu — YALNIZ panelde açıksa gelir. */
+    val logoUrl: String? = null,
+    /** Dilden bağımsız metin geçersiz kılmaları. */
+    val texts: Map<String, String> = emptyMap(),
+    /** Dile özgü metinler; önceliği [texts]ten YÜKSEK. */
+    val textLocales: Map<String, Map<String, String>> = emptyMap(),
+) {
+    /**
+     * Metin çözümü — **widget.js ile AYNI sıra**: `textLocales[dil][anahtar]` → `texts[anahtar]`
+     * → gömülü karşılık. Sırayı değiştirmek, panelde dile özgü metin yazan satıcının mobilde
+     * başka bir şey görmesi demekti.
+     */
+    /**
+     * Çalışma alanının dili (`tr`/`en`). Panelde ayarlanan dil CİHAZ dilinden ÖNCE gelir — web
+     * widget'ı da böyle davranır; aksi hâlde aynı çalışma alanı iki yüzeyde iki dil konuşurdu.
+     */
+    val language: String get() = locale ?: "tr"
+
+    fun text(key: String, tr: String, en: String): String {
+        textLocales[language]?.get(key)?.takeIf { it.isNotBlank() }?.let { return it }
+        texts[key]?.takeIf { it.isNotBlank() }?.let { return it }
+        return if (language == "tr") tr else en
+    }
+}
+
 /** Yardım merkezi makalesi (public KB DTO'suyla aynı alanlar). */
 data class NsuppArticle(
     val id: String,
@@ -169,6 +211,7 @@ class NsuppApi(private val config: NsuppConfig, private val http: NsuppHttp) {
             conversationId = Json.obj(data, "conversation")?.let { Json.string("{$it}", "id") },
             messages = Json.messages(data, "messages"),
             pendingRating = Json.bool(data, "pendingRating") ?: false,
+            config = Json.publicConfig(data),
         )
     }
 
@@ -182,6 +225,8 @@ class NsuppApi(private val config: NsuppConfig, private val http: NsuppHttp) {
          * memnuniyet ölçümünün TAMAMEN dışında kalır.
          */
         val pendingRating: Boolean = false,
+        /** Çalışma alanının widget yapılandırması — görünüm ve metinler BURADAN gelir. */
+        val config: NsuppPublicConfig? = null,
     )
 
     /**

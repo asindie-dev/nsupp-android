@@ -34,6 +34,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -63,7 +64,33 @@ fun NsuppChatScreen(modifier: Modifier = Modifier) {
         if (state.messages.isNotEmpty()) listState.animateScrollToItem(state.messages.lastIndex)
     }
 
+    // Marka rengi panelden gelir; geçersiz/eksikse temanın kendi rengi (yanlış renk basmaktansa nötr).
+    val marka = nsuppRenk(state.brandColor) ?: MaterialTheme.colorScheme.primary
+
     Column(modifier.fillMaxSize()) {
+        // BAŞLIK: web widget'ıyla AYNI bilgiyi taşır — marka rengi, çalışma alanı adı/başlık
+        // metni, logo. Ayar panelde bir kez yapılır; yüzeyler arasında ayrışmaz.
+        Row(
+            Modifier.fillMaxWidth().background(marka).padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column {
+                Text(
+                    state.t("title", state.config?.name ?: "Destek", state.config?.name ?: "Support"),
+                    style = MaterialTheme.typography.titleSmall,
+                    color = Color.White,
+                )
+                Text(
+                    if (state.operatorsOnline)
+                        state.t("subtitle", "Genelde birkaç dakika içinde yanıtlıyoruz", "We usually reply within minutes")
+                    else
+                        state.t("subtitleAway", "Şu an çevrimdışıyız — mesaj bırakın, döneriz", "We're offline right now — leave a message"),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White.copy(alpha = 0.85f),
+                )
+            }
+        }
+
         // HATA GÖRÜNÜR: sessizce boş ekran bırakmak kullanıcıya "bozuk" dedirtir.
         state.error?.let { err ->
             Text(
@@ -87,7 +114,7 @@ fun NsuppChatScreen(modifier: Modifier = Modifier) {
                         Modifier
                             .clip(RoundedCornerShape(14.dp))
                             .background(
-                                if (m.isFromVisitor) MaterialTheme.colorScheme.primaryContainer
+                                if (m.isFromVisitor) marka.copy(alpha = 0.15f)
                                 else MaterialTheme.colorScheme.surfaceVariant
                             )
                             .padding(horizontal = 12.dp, vertical = 8.dp)
@@ -115,7 +142,7 @@ fun NsuppChatScreen(modifier: Modifier = Modifier) {
                             // Tanımadığımız içerik türü: boş balon çizmek yerine ne olduğunu
                             // söyleriz — sessiz boşluk teşhis edilemez.
                             Text(
-                                NsuppTexts.unsupportedMessage,
+                                state.t("unsupported", "Bu mesaj bu sürümde gösterilemiyor.", "This message can’t be shown in this version."),
                                 style = MaterialTheme.typography.labelSmall,
                             )
                         }
@@ -132,7 +159,7 @@ fun NsuppChatScreen(modifier: Modifier = Modifier) {
             // CSAT: konuşma çözüldü ve puan bekleniyor. Sormazsak mobil kanal memnuniyet ölçümünün
             // TAMAMEN dışında kalır (web'de sorulur, mobilde sorulmazdı).
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(NsuppTexts.ratePrompt, style = MaterialTheme.typography.bodySmall)
+                Text(state.t("rateAsk", "Bu görüşmeyi nasıl buldunuz?", "How was this conversation?"), style = MaterialTheme.typography.bodySmall)
                 Spacer(Modifier.weight(1f))
                 (1..5).forEach { p -> TextButton(onClick = { Nsupp.rate(p) }) { Text("$p") } }
             }
@@ -143,7 +170,7 @@ fun NsuppChatScreen(modifier: Modifier = Modifier) {
                 value = draft,
                 onValueChange = { draft = it },
                 modifier = Modifier.weight(1f),
-                placeholder = { Text(NsuppTexts.composerPlaceholder) },
+                placeholder = { Text(state.t("placeholder", "Mesajınızı yazın…", "Type your message…")) },
                 maxLines = 4,
             )
             Spacer(Modifier.width(8.dp))
@@ -156,7 +183,7 @@ fun NsuppChatScreen(modifier: Modifier = Modifier) {
                     Nsupp.send(gonderilen) { ok -> if (!ok && draft.isEmpty()) draft = gonderilen }
                 },
                 enabled = draft.isNotBlank(),
-            ) { Text("→", style = MaterialTheme.typography.titleLarge) }
+            ) { Text("→", style = MaterialTheme.typography.titleLarge, color = marka) }
         }
     }
 }
@@ -183,4 +210,16 @@ class NsuppChatActivity : ComponentActivity() {
             context.startActivity(i)
         }
     }
+}
+
+/**
+ * `#rrggbb` → Compose rengi. Marka rengi çalışma alanı ayarından gelir; widget ile AYNI değeri
+ * kullanmak "widget bir kez ayarlanır, her yüzeyde aynı görünür" kuralının görsel ayağıdır.
+ * Geçersiz/eksik değerde null → arayüz temanın rengine düşer (yanlış renk basmaktansa nötr).
+ */
+internal fun nsuppRenk(hex: String?): Color? {
+    val s = hex?.trim()?.removePrefix("#") ?: return null
+    if (s.length != 6) return null
+    val v = s.toLongOrNull(16) ?: return null
+    return Color(0xFF000000 or v)
 }

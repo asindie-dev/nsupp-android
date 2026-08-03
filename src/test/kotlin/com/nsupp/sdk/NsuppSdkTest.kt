@@ -306,6 +306,36 @@ class NsuppSessionTest {
         assertEquals(onceki, http.istekler.size, "boş sorgu için ağa çıkıldı")
     }
 
+    @Test fun `widget yapilandirmasi oturumdan okunur (panel ayari mobilde de gecerli)`() {
+        // 🔴 Mobil ekran eskiden uygulamanın KENDİ temasını kullanıyordu. Ürün kuralı bunun tersi:
+        // widget ayarı çalışma alanı başına TEKtir ve her yüzeyde AYNI görünür.
+        val http = SahteHttp(mutableListOf(200 to """{"data":{"visitorToken":"vt","messages":[],
+          "config":{"name":"Acme Destek","logoUrl":"https://x/l.png","defaultLanguage":"tr",
+            "widgetConfig":{"color":"#7c3aed","locale":"tr",
+              "texts":{"placeholder":"Bize yazın…"},
+              "textLocales":{"tr":{"title":"Acme Yardım"},"en":{"title":"Acme Help"}}}}}}"""))
+        val s = NsuppSession(NsuppApi(cfg, http), InMemoryTokenStore())
+        s.start()
+        val c = s.state.config!!
+        assertEquals("Acme Destek", c.name)
+        assertEquals("#7c3aed", s.state.brandColor)
+        assertEquals("https://x/l.png", c.logoUrl)
+        // textLocales `texts`ten ÖNCE gelir (widget.js ile aynı sıra)
+        assertEquals("Acme Yardım", s.state.t("title", "Destek", "Support"))
+        assertEquals("Bize yazın…", s.state.t("placeholder", "Mesajınızı yazın…", "Type…"))
+        // Tanımsız anahtar gömülü karşılığa düşer
+        // Dil ÇALIŞMA ALANINDAN (tr) → Türkçe karşılık; cihaz dili İngilizce olsa bile.
+        assertEquals("gomulu-tr", s.state.t("boyleBirAnahtarYok", "gomulu-tr", "fallback-en"))
+    }
+
+    @Test fun `marka rengi yoksa arayuz kendi vurgusuna duser (yanlis renk basilmaz)`() {
+        val http = SahteHttp(mutableListOf(200 to """{"data":{"visitorToken":"vt","messages":[],"config":{"name":"X"}}}"""))
+        val s = NsuppSession(NsuppApi(cfg, http), InMemoryTokenStore())
+        s.start()
+        assertNull(s.state.brandColor)
+        assertEquals("X", s.state.config?.name)
+    }
+
     @Test fun `bos mesaj gonderilmez`() {
         val http = SahteHttp(mutableListOf())
         NsuppSession(NsuppApi(cfg, http), InMemoryTokenStore("vt")).send("   ")

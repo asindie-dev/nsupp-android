@@ -42,7 +42,22 @@ data class NsuppState(
     val pendingRating: Boolean = false,
     /** Yüklenmiş yardım merkezi makaleleri ([NsuppSession.loadArticles] doldurur). */
     val articles: List<NsuppArticle> = emptyList(),
-)
+    /**
+     * Çalışma alanının widget yapılandırması (renk, metinler, logo) — [NsuppSession.start] doldurur.
+     * Arayüz görünümünü BURADAN alır: ayar panelde bir kez yapılır, her yüzeyde aynı görünür.
+     */
+    val config: NsuppPublicConfig? = null,
+) {
+    /**
+     * Panelde tanımlı metni çöz; yoksa gömülü karşılık. Sıra widget.js ile AYNI — satıcının
+     * yazdığı metin her yüzeyde aynı çıkmalı.
+     */
+    fun t(key: String, tr: String, en: String): String =
+        config?.text(key, tr, en) ?: NsuppTexts.t(tr, en)
+
+    /** Marka rengi (`#rrggbb`) — panelde ayarlanan; yoksa null (arayüz kendi vurgusunu kullanır). */
+    val brandColor: String? get() = config?.color
+}
 
 class NsuppSession(
     private val api: NsuppApi,
@@ -106,7 +121,12 @@ class NsuppSession(
                 return
             }
             r.visitorToken?.let { store.write(it) }
-            emit(apply(state.copy(error = null, conversationId = r.conversationId, pendingRating = r.pendingRating), r.messages, advanceCursor = true))
+            emit(apply(state.copy(
+                error = null,
+                conversationId = r.conversationId,
+                pendingRating = r.pendingRating,
+                config = r.config ?: state.config,
+            ), r.messages, advanceCursor = true))
             // Oturumdan ÖNCE verilen kimlik şimdi gönderilir (yoksa müşteri anonim kalırdı).
             bekleyenKimlik?.let { k -> bekleyenKimlik = null; gonderKimlik(k) }
         } catch (e: Exception) {
