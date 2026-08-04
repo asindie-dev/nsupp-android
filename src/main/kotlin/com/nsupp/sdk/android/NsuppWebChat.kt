@@ -1,12 +1,17 @@
 package com.nsupp.sdk.android
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.Uri
 import android.util.Log
+import android.webkit.PermissionRequest
+import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebStorage
@@ -62,6 +67,20 @@ class NsuppWebChat(
     /** Yükleme başarısız oldu mu — arayüz sebebi gösterir; boş beyaz ekran "bozuk" demektir. */
     var onLoadFailed: ((String) -> Unit)? = null
     var onLoaded: (() -> Unit)? = null
+
+    /**
+     * REDDEDİLEN MEDYA İZNİ / AÇILMAYAN DOSYA SEÇİCİSİ — sebebi buraya düşer.
+     *
+     * Reddedilen bir izin kullanıcıya "düğmeye bastım, hiçbir şey olmadı" diye görünür; sebebi
+     * hiçbir yerde yazılı değilse kusur teşhis EDİLEMEZ.
+     *
+     * SATICININ GÖRDÜĞÜ KANAL LOGCAT'TİR (`NsuppWebChat` etiketi) — sebep her hâlükârda oraya
+     * yazılır; `Nsupp.webChat` `internal` olduğu için bu alan satıcı kodundan okunamaz, tıpkı
+     * [onLoadFailed] gibi. Alanın varlık sebebi kararın GÖZLENEBİLİR olması: enstrümanlı testler
+     * "hangi istek hangi sebeple reddedildi"yi buradan ölçüyor (bkz. `NsuppIzinKoprusuTest`).
+     * Kullanıcıya gösterilecek metin DEĞİLDİR (çeviri yoktur, iç ayrıntı taşır).
+     */
+    var onPermissionDenied: ((String) -> Unit)? = null
 
     /**
      * Bu köprüye bağlı CANLI yüzey — bir WebView + ONUN document-start tutamacı + üstündeki
@@ -181,6 +200,11 @@ class NsuppWebChat(
         // `onCreateWindow` sözleşmesine düşer ve gezinme süzgecimizin GÖRMEDİĞİ ikinci bir pencere
         // açılabilirdi.
         wv.settings.setSupportMultipleWindows(false)
+        // KONUM KAPALI: sohbetin konuma ihtiyacı yok. Kapatılmasaydı `navigator.geolocation`
+        // çağrısı `WebChromeClient.onGeolocationPermissionsShowPrompt`a düşerdi; o kancanın
+        // varsayılan gövdesi BOŞTUR — geri-çağrımı hiç çağırmaz, yani sayfa sonsuza kadar yanıt
+        // bekler. Ayarı kapatmak isteği ANINDA reddedilmiş yapar (deny-by-default, askıda değil).
+        wv.settings.setGeolocationEnabled(false)
         wv.setBackgroundColor(Color.TRANSPARENT)
 
         // Yeni yüzey GÜNCEL nesle doğar: kaydın hemen ardından `loadUrl(hostUrl)` çağrılıyor,
@@ -277,8 +301,120 @@ class NsuppWebChat(
                 }
             }
         }
+        wv.webChromeClient = izinKoprusu(context)
         wv.loadUrl(hostUrl)
         return wv
+    }
+
+    /**
+     * MEDYA İZNİ + DOSYA SEÇİCİ KÖPRÜSÜ — `WebChromeClient` kurulmadan İKİSİ DE ÇALIŞMAZ.
+     *
+     * Tarayıcıda izni TARAYICI sorar; WebView'da soran barındıran uygulamadır ve
+     * `WebChromeClient.onPermissionRequest` javadoc'unun deyişiyle varsayılan gövde
+     * `request.deny()` çağırır — yani kanca kurulmazsa `getUserMedia` KOŞULSUZ reddedilir ve
+     * widget'ın sesli mesaj düğmesi hiç çalışmaz. Aynı şekilde `onShowFileChooser` yoksa
+     * `<input type="file">` HİÇ açılmaz; Android'de görsel/dosya eki gönderilememesinin sebebi
+     * buydu. İkisi de webde çalışıyor, uygulamada çalışmıyordu.
+     *
+     * ── İZİN KÖR VERİLMEZ ────────────────────────────────────────────────────────────────────
+     * Kapı üç koşulu BİRLİKTE arar (aşağıda tek tek):
+     *  ① isteği yapan belge bizim origin'imizde mi,
+     *  ② istenen izin YALNIZ mikrofon mu,
+     *  ③ uygulamanın Android `RECORD_AUDIO` çalışma-zamanı izni var mı.
+     *
+     * ── DÜRÜST SINIR: "ANA ÇERÇEVE Mİ" SORULAMIYOR ───────────────────────────────────────────
+     * `WebMessageListener`da olduğu gibi bir `isMainFrame` bilgisi YOKTUR: `PermissionRequest`
+     * yalnız `getOrigin()`, `getResources()`, `grant()`, `deny()` taşır — hangi çerçevenin
+     * istediğini söylemez. Uydurmuyoruz: kapı ① ile kendi origin'imize sınırlanır, dolayısıyla
+     * KENDİ origin'imizdeki bir alt çerçeve de geçebilir. Yabancı origin'li çerçeve geçemez.
+     */
+    private fun izinKoprusu(context: Context): WebChromeClient = object : WebChromeClient() {
+
+        override fun onPermissionRequest(request: PermissionRequest?) {
+            if (request == null) return
+            val kaynaklar = request.resources ?: emptyArray()
+            // ① ORIGIN — kabuğun zaten kurduğu kaynak kapısı, izin yüzeyinde de aynısı.
+            val origin = request.origin
+            if (origin == null || !ayniOrigin(origin)) {
+                izniReddet(request, "medya izni YABANCI origin'den istendi, reddedildi: " + origin)
+                return
+            }
+            // ② YALNIZ MİKROFON. Kamera/MIDI/korumalı-medya reddedilir; "hepsini iste, birini
+            // ver" de reddedilir — birden çok kaynak istendiğinde hangisinin gerçekten
+            // kullanılacağını bilemeyiz, dar kapsam güvenli olandır.
+            if (kaynaklar.size != 1 || kaynaklar[0] != PermissionRequest.RESOURCE_AUDIO_CAPTURE) {
+                izniReddet(request, "yalnız mikrofon açılır; istenen: " + kaynaklar.joinToString())
+                return
+            }
+            // ③ ANDROID ÇALIŞMA-ZAMANI İZNİ. `grant()` yalnız WEB tarafını açar; Android'in
+            // RECORD_AUDIO izni yoksa mikrofon yine de açılmaz ve `getUserMedia` anlaşılmaz bir
+            // hatayla düşerdi. SDK bu izni KENDİ İSTEYEMEZ (istemek için Activity gerekir ve
+            // satıcının izin akışına karışmak yanlış olur) — bu yüzden reddedip SEBEBİ söylüyoruz;
+            // satıcının yapması gereken README'de yazılı.
+            if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                izniReddet(
+                    request,
+                    "mikrofon isteği reddedildi: uygulamanın RECORD_AUDIO izni yok — " +
+                        "manifest'e ekleyip çalışma-zamanı iznini isteyin (bkz. android-sdk README)",
+                )
+                return
+            }
+            try {
+                request.grant(arrayOf(PermissionRequest.RESOURCE_AUDIO_CAPTURE))
+            } catch (e: Exception) {
+                Log.w(TAG, "mikrofon izni verilemedi: " + e)
+            }
+        }
+
+        /**
+         * `<input type="file">` — dosya/görsel eki.
+         *
+         * Dönüş `true` = geri-çağrımı BİZ çağıracağız; `false` = WebView varsayılanı uygular
+         * (isteği iptal eder). Aradaki fark hayati: `true` deyip geri-çağrımı çağırmamak dosya
+         * girişini KALICI kilitler. Bu yüzden `true` yalnız kabuk Activity'si gerçekten
+         * başlatıldığında dönülür (bkz. [NsuppFileChooserActivity]).
+         */
+        override fun onShowFileChooser(
+            view: WebView?,
+            filePathCallback: ValueCallback<Array<Uri>>?,
+            fileChooserParams: FileChooserParams?,
+        ): Boolean {
+            if (filePathCallback == null || fileChooserParams == null) return false
+            // ANA BELGE KAPISI. `FileChooserParams` da isteyen ÇERÇEVEYİ söylemez; söyleyebildiği
+            // tek şey ekrandaki ana belgedir (`WebView.getUrl`). Kaçış sırasında (bkz.
+            // `onPageStarted` kurtarması) yabancı bir belge ekranda olabilir — o an seçici
+            // açılmaz. Kendi sayfamızın içindeki bir alt çerçeve için açılabilir; bu tarayıcı
+            // davranışının aynısıdır ve kullanıcı dosyayı zaten kendi eliyle seçer.
+            val adres = view?.url
+            if (adres == null || !ayniOrigin(Uri.parse(adres))) {
+                teshis("dosya seçici YABANCI belgede istendi, açılmadı: " + adres)
+                return false
+            }
+            val secici = try {
+                fileChooserParams.createIntent()
+            } catch (e: Exception) {
+                teshis("dosya seçici niyeti üretilemedi: " + e)
+                return false
+            }
+            return NsuppFileChooserActivity.baslat(context, secici, filePathCallback) { teshis(it) }
+        }
+    }
+
+    private fun izniReddet(request: PermissionRequest, sebep: String) {
+        try {
+            request.deny()
+        } catch (e: Exception) {
+            Log.w(TAG, "izin reddedilemedi: " + e)
+        }
+        teshis(sebep)
+    }
+
+    /** Sessiz kilit YASAK: sebep HER ZAMAN logcat'e, ayrıca gözlenebilir kanala ([onPermissionDenied]). */
+    private fun teshis(sebep: String) {
+        Log.w(TAG, sebep)
+        onPermissionDenied?.invoke(sebep)
     }
 
     /**

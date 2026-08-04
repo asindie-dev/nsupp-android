@@ -10,9 +10,15 @@
     origin'den belge yüklemek gerekiyor; yerel TLS sertifikası üretmek testi kanıt gücü
     ARTMADAN karmaşıklaştırırdı. Ürün tarafında taban https'tir ve kabuk `mixedContentMode`u
     NEVER_ALLOW'a çeker.
+  · RECORD_AUDIO: izin köprüsünün OLUMLU dalı ("kendi origin'imizden mikrofon isteği AÇILIR")
+    ancak uygulamanın izni gerçekten varken gözlenebilir; izin çalışma zamanında
+    `UiAutomation.grantRuntimePermission` ile verilir ve bir izin yalnız manifest'te BEYAN
+    edilmişse verilebilir. Kütüphanenin kendi manifest'ine bu izin YAZILMAZ (gerekçe orada) —
+    yani satıcıya dayatılan bir şey yok, yalnız test APK'sı beyan ediyor.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <application android:usesCleartextTraffic="true">
         <!-- Testlerin WebView'ı gerçekten gösterdiği kap; bkz. BosAktivite (niçin şart olduğu orada). -->
         <activity android:name="com.nsupp.sdk.android.BosAktivite" android:exported="false" />

@@ -242,6 +242,53 @@ override fun onMessageReceived(m: RemoteMessage) {
 
 ---
 
+## Sesli mesaj ve dosya eki — mikrofon izni sizde, gerisi SDK'da
+
+Widget'ın **sesli mesaj** düğmesi mikrofona, **dosya/görsel eki** ise dosya seçicisine ihtiyaç
+duyar. Tarayıcıda ikisini de tarayıcı halleder; WebView'da halleden **barındıran uygulamadır** ve
+cevap vermezse varsayılan **reddetmektir**. SDK bu köprüyü kurar — sizden istenen tek şey mikrofon
+iznidir.
+
+**Dosya/görsel eki: yapmanız gereken hiçbir şey yok.** Seçici SDK'nın kendi görünmez
+Activity'sinden açılır (`NsuppFileChooserActivity`, kütüphane manifest'inde bildirilir); sonucu
+`onActivityResult` ile o alır, sizin Activity'nizden hiçbir şey yönlendirmeniz gerekmez.
+
+**Sesli mesaj: mikrofon izni sizin kararınız.** Kütüphane `RECORD_AUDIO`yu **kendi manifest'ine
+yazmaz** — yazsaydı kütüphane manifest'i sizinkiyle birleştiği için sesli mesajı hiç kullanmayan
+uygulamalar da Play sayfasında "Mikrofon" ile görünürdü. Sesli mesaj istiyorsanız iki adım:
+
+```xml
+<!-- 1) Uygulamanızın AndroidManifest.xml'i -->
+<uses-permission android:name="android.permission.RECORD_AUDIO" />
+```
+
+```kotlin
+// 2) Çalışma-zamanı izni — kullanıcı sesli mesaj düğmesine basmadan ÖNCE elinizde olmalı.
+// SDK bunu sizin yerinize İSTEYEMEZ: izin istemek Activity gerektirir ve kütüphanenin
+// satıcının izin akışına (gerekçe ekranı, "bir daha sorma" durumu) karışması yanlış olur.
+registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    .launch(Manifest.permission.RECORD_AUDIO)
+```
+
+İzin yoksa istek **reddedilir ve sebebi söylenir** — sessiz kalmaz. Sebep logcat'e `NsuppWebChat`
+etiketiyle yazılır:
+
+```
+W/NsuppWebChat: mikrofon isteği reddedildi: uygulamanın RECORD_AUDIO izni yok —
+                manifest'e ekleyip çalışma-zamanı iznini isteyin (bkz. android-sdk README)
+```
+
+"Düğmeye bastım, hiçbir şey olmadı" diye görünen her red bu satırlardan birini bırakır: yabancı
+origin, mikrofon dışı kaynak, eksik çalışma-zamanı izni, açılamayan dosya seçici. Metin **teşhis
+içindir**, kullanıcıya gösterilmek için değil (çevirisi yoktur, iç ayrıntı taşır).
+
+**Açılan tek izin mikrofondur.** Kamera, konum, MIDI ve korumalı-medya istekleri **reddedilir**;
+kendi sunucumuz dışındaki bir origin'den gelen istek de reddedilir. Bunun bilinen bir sonucu var:
+operatörün başlattığı **görüntülü çağrı** uygulamada yanıtlanamaz (widget kamera+mikrofonu birlikte
+ister, kamera reddedilince çağrı `no_media` ile kapanır). **Sesli** çağrı ve sesli mesaj çalışır.
+
+---
+
 ## Kullanıcıyı tanıtma
 
 ```kotlin

@@ -3,6 +3,12 @@
   İZİN İSTEMİYORUZ: INTERNET izni zaten uygulamanın manifest'inde vardır ve kütüphanenin ek izin
   dayatması satıcının izin listesini kirletir. POST_NOTIFICATIONS (Android 13+) da uygulamanın
   kararıdır — bildirimi biz göstermiyoruz (bkz. NsuppMessagingService).
+
+  RECORD_AUDIO DA BURAYA YAZILMAZ, bilerek: kütüphane manifest'i satıcının manifest'iyle
+  BİRLEŞİR, yani buraya konan izin sohbeti kuran HER uygulamanın izin listesine geçerdi —
+  sesli mesajı hiç kullanmayan satıcı da Play sayfasında "Mikrofon" ile görünürdü. Kararı satıcı
+  verir; SDK izni yoksa mikrofon isteğini reddeder ve SEBEBİNİ söyler
+  (`NsuppWebChat.onPermissionDenied` + logcat). Satıcının yapacakları README'de.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application>
@@ -10,5 +16,24 @@
             android:name="com.nsupp.sdk.android.NsuppChatActivity"
             android:exported="false"
             android:label="Destek" />
+        <!--
+          `<input type="file">` seçicisinin görünmez kabuğu — sohbette dosya/görsel eki bunun
+          üzerinden gider. Niçin AYRI bir Activity gerektiği sınıf belgesinde yazılı
+          (`NsuppFileChooserActivity`): sonucu `onActivityResult` ile ancak KENDİ Activity'miz
+          alabilir.
+
+          · exported=false → yalnız SDK başlatabilir, dışarıdan tetiklenemez.
+          · Translucent tema → kullanıcı yalnız dosya seçiciyi görür, arada boş bir ekran yanmaz.
+          · configChanges → ekran döndürüldüğünde YENİDEN YARATILMAZ. Yaratılsaydı bekleyen
+            geri-çağrımı kaybeder, dosya girişi kalıcı kilitlenirdi.
+          · taskAffinity AYARLANMAZ: varsayılan afinite satıcının uygulamasınınkidir, böylece
+            FLAG_ACTIVITY_NEW_TASK yeni görev açmak yerine açık olan göreve yerleşir.
+        -->
+        <activity
+            android:name="com.nsupp.sdk.android.NsuppFileChooserActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
     </application>
 </manifest>
