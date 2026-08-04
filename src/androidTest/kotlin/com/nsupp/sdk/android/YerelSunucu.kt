@@ -7,6 +7,8 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
@@ -37,6 +39,9 @@ class YerelSunucu {
     /** Gelen isteklerin "YÖNTEM /yol" kaydı — POST'un gerçekten geldiğini görmek için. */
     val istekler: MutableList<String> = Collections.synchronizedList(mutableListOf<String>())
 
+    private val hamlar = ConcurrentHashMap<String, Pair<String, () -> String>>()
+    private val bekletmeler = ConcurrentHashMap<String, CountDownLatch>()
+
     fun koy(yol: String, html: String) {
         sayfalar[yol] = { html }
     }
@@ -45,6 +50,32 @@ class YerelSunucu {
     fun koy(yol: String, uret: () -> String) {
         sayfalar[yol] = uret
     }
+
+    /**
+     * HTML olmayan ham gövde (ör. `/session` JSON yanıtı) — damga script'i EKLENMEZ.
+     * `NsuppApi`nin konuştuğu uçları gerçek HTTP üzerinden yanıtlamak için.
+     */
+    fun koyHam(yol: String, icerikTuru: String, uret: () -> String) {
+        hamlar[yol] = icerikTuru to uret
+    }
+
+    /**
+     * Bu yola gelen SONRAKİ istekler [bekletmeSurdur] çağrılana kadar YANITLANMAZ.
+     *
+     * NİÇİN GEREKLİ: "sıfırlama sırasında UÇUŞTA olan istek" penceresi ancak yanıt gerçekten
+     * askıda tutulursa gözlenebilir. Uyku ile taklit etmek bir TAHMİN olurdu; burada pencereyi
+     * testin kendisi açıp kapatıyor.
+     */
+    fun bekletmeAc(yol: String) {
+        bekletmeler[yol] = CountDownLatch(1)
+    }
+
+    fun bekletmeSurdur(yol: String) {
+        bekletmeler.remove(yol)?.countDown()
+    }
+
+    /** "YÖNTEM /yol" kaydının kaç kez geldiği — yeniden yüklemeyi saymak için. */
+    fun istekSayisi(kayit: String): Int = istekler.count { it == kayit }
 
     /**
      * Bir yola EN SON servis edilen belgenin damgası.
@@ -57,6 +88,9 @@ class YerelSunucu {
     fun sonDamga(yol: String): Int = damgalar[yol] ?: 0
 
     fun kapat() {
+        // Askıdaki istekler SERBEST bırakılır: bırakılmasaydı test bitse de servis iş parçacığı
+        // 60 sn boyunca kilitli kalırdı.
+        bekletmeler.keys.toList().forEach { bekletmeSurdur(it) }
         try {
             soket.close()
         } catch (_: Exception) {
@@ -96,9 +130,28 @@ class YerelSunucu {
                 val yontem = parcalar.getOrElse(0) { "GET" }
                 val yol = parcalar.getOrElse(1) { "/" }.substringBefore('?')
                 istekler.add("$yontem $yol")
+                // Kayıt AWAIT'ten ÖNCE: test "istek sunucuya ULAŞTI ama yanıtlanmadı" anını
+                // görebilmeli.
+                bekletmeler[yol]?.await(60, TimeUnit.SECONDS)
 
-                val uret = sayfalar[yol]
                 val cikis = s.getOutputStream()
+                val ham = hamlar[yol]
+                if (ham != null) {
+                    val govde = ham.second().toByteArray(Charsets.UTF_8)
+                    cikis.write(
+                        (
+                            "HTTP/1.1 200 OK\r\n" +
+                                "Content-Type: ${ham.first}\r\n" +
+                                "Cache-Control: no-store\r\n" +
+                                "Content-Length: ${govde.size}\r\n" +
+                                "Connection: close\r\n\r\n"
+                            ).toByteArray()
+                    )
+                    cikis.write(govde)
+                    cikis.flush()
+                    return
+                }
+                val uret = sayfalar[yol]
                 if (uret == null) {
                     cikis.write("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".toByteArray())
                 } else {

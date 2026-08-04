@@ -380,6 +380,51 @@ class NsuppSessionTest {
         assertTrue(s.stopped, "reset sonrası döngü durmuyor")
     }
 
+    /**
+     * 🔴 K1d — UÇUŞTAKİ OTURUM YANITI, ÇIKIŞTAN SONRA JETONU GERİ YAZAMAZ.
+     *
+     * `stopped` bayrağı yetmiyordu: [NsuppSession.start] girişte onu `false` yapıyor, ayrıca
+     * coroutine iptali bloklayan `HttpURLConnection`ı kesmez. Sıra: istek gider → kullanıcı çıkış
+     * yapar (jeton silinir) → yanıt döner → `store.write("vt_A")`. Jeton deposu WebView ile AYNI
+     * olduğu için `NsuppWebChat` tarafında nesil kapısıyla kapatılan kusur bu ikinci yazma
+     * kapısından geri geliyordu.
+     *
+     * Sahte HTTP yanıtı DÖNDÜRMEDEN ÖNCE çıkışı çalıştırır: "istek uçuştayken reset" anı iş
+     * parçacığı ya da uyku olmadan, deterministik üretilir (uyku, makine yavaşlayınca testi yanlış
+     * sebeple yeşile çevirirdi).
+     */
+    @Test fun `ucustaki oturum yaniti CIKISTAN SONRA jetonu geri YAZAMAZ`() {
+        val store = InMemoryTokenStore()
+        var s: NsuppSession? = null
+        val http = object : NsuppHttp {
+            override fun request(
+                url: String,
+                method: String,
+                body: String?,
+                headers: Map<String, String>,
+            ): Pair<Int, String> {
+                s!!.reset() // ← kullanıcı çıkış yaptı; istek hâlâ uçuşta
+                return 200 to """{"data":{"visitorToken":"vt_A","messages":[]}}"""
+            }
+        }
+        s = NsuppSession(NsuppApi(cfg, http), store)
+        s.start()
+        assertNull(store.read(), "çıkıştan sonra dönen oturum yanıtı jetonu GERİ YAZDI → sonraki kullanıcı ÖNCEKİNİN oturumunu sürdürür")
+    }
+
+    /**
+     * TERS YÖN: nesil kapısı MEŞRU yolu kapatmamalı. Kapatsaydı çıkıştan sonra giren kullanıcı hiç
+     * oturum açamaz ve sohbet sonsuza kadar boş kalırdı.
+     */
+    @Test fun `cikistan SONRA acilan oturum jetonu NORMAL saklar`() {
+        val http = SahteHttp(mutableListOf(200 to """{"data":{"visitorToken":"vt_B","messages":[]}}"""))
+        val store = InMemoryTokenStore()
+        val s = NsuppSession(NsuppApi(cfg, http), store)
+        s.reset()
+        s.start()
+        assertEquals("vt_B", store.read(), "nesil kapısı meşru oturum açmayı da kapattı")
+    }
+
     @Test fun `kalici hata dongu durdurur ve sebep gosterilir`() {
         val http = SahteHttp(mutableListOf(
             200 to """{"data":{"visitorToken":"vt","messages":[]}}""",

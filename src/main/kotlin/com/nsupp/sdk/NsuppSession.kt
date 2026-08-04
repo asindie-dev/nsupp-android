@@ -81,6 +81,29 @@ class NsuppSession(
         private set
 
     /**
+     * OTURUM NESLİ (epok). [reset] her çağrıldığında artar.
+     *
+     * 🔴 NİÇİN [stopped] YETMEZ: `stopped` bir "döngü dursun" bayrağıdır ve [start] girişte onu
+     * `false` yapar — yani çıkış, UÇUŞTAKİ bir isteği geçersiz kılmıyordu. Buradaki her ağ çağrısı
+     * BLOKLAYAN bir HTTP isteğidir; çağıranın coroutine'ini iptal etmek `HttpURLConnection`ı
+     * kesmez, istek tamamlanır ve yanıt geri döner. Kapı olmasaydı o yanıt çıkış yapan kullanıcının
+     * verisini geri yazardı:
+     *  ① [start] → `store.write(t)`: silinen jeton geri gelir, sonraki açılış ESKİ ziyaretçiyi
+     *     sürdürür (jeton deposu `NsuppWebChat` ile PAYLAŞILDIĞI için orada kapatılan aynı kusur
+     *     buradan geri geliyordu),
+     *  ② [gonderKimlik] → [kimlikEmail]: sonraki kullanıcının [setSessionData] çağrısı ÖNCEKİ
+     *     kişinin CRM kaydına yazardı,
+     *  ③ [pollOnce]/[send] → `state.messages`: temizlenmiş ekrana öncekinin mesajları geri düşerdi.
+     *
+     * Atomik: [reset] arayüz (ana) iş parçacığından çağrılır, istekler ise IO'da koşar — sıradan
+     * bir `Int` artışının görünürlüğü garanti değildir.
+     *
+     * Kural: bir ağ çağrısından SONRA ziyaretçiye ait bir alan yazılacaksa, önce çağrı başındaki
+     * nesil hâlâ geçerli mi diye BAKILIR.
+     */
+    private val nesil = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /**
      * [startNewConversation] çağrıldı ve HENÜZ mesaj gönderilmedi. Bir sonraki gönderim sunucuya
      * "yeni konu" bayrağını taşır; taşımazsak mesaj eski konuşmaya düşerdi.
      */
@@ -108,8 +131,12 @@ class NsuppSession(
     /** Oturumu aç (ilk açılışta ziyaretçi üretilir) ve geçmişi yükle. */
     fun start() {
         stopped = false
+        val n = nesil.get()
         try {
             val r = api.openSession(store.read())
+            // Uçuşta çıkış yapıldı (bkz. [nesil]): bu yanıt SİLİNMİŞ ziyaretçiye ait, tek bir alanı
+            // bile yazamaz. Hata da basmayız — kullanıcı hata yapmadı, oturumu kendisi kapattı.
+            if (n != nesil.get()) return
             // KISITLI (sayfa/ülke/IP kuralı): sunucu sohbeti kapattı. Sessiz boş ekran DEĞİL —
             // "sessiz kilit = teşhis edilemez hata"; arayüz sebebi gösterebilsin.
             if (r.restricted) {
@@ -130,6 +157,7 @@ class NsuppSession(
             // Oturumdan ÖNCE verilen kimlik şimdi gönderilir (yoksa müşteri anonim kalırdı).
             bekleyenKimlik?.let { k -> bekleyenKimlik = null; gonderKimlik(k) }
         } catch (e: Exception) {
+            if (n != nesil.get()) return
             emit(state.copy(error = e.message ?: NsuppTexts.connectFailed))
         }
     }
@@ -144,14 +172,19 @@ class NsuppSession(
         val clean = text.trim()
         val token = store.read()
         if (clean.isEmpty() || token == null) return false
+        val n = nesil.get()
         return try {
             val r = api.sendMessage(token, clean, state.conversationId, newConversation = yeniKonuBekliyor)
+            // Uçuşta çıkış yapıldı: sunucu mesajı KABUL ETTİ (bu yüzden `true`), ama temizlenmiş
+            // ekrana çıkan kullanıcının balonunu geri basmayız (bkz. [nesil]).
+            if (n != nesil.get()) return true
             yeniKonuBekliyor = false
             var next = state.copy(error = null, conversationId = r.conversationId ?: state.conversationId)
             if (r.message != null) next = apply(next, listOf(r.message), advanceCursor = false)
             emit(next)
             true
         } catch (e: Exception) {
+            if (n != nesil.get()) return false
             emit(state.copy(error = e.message ?: NsuppTexts.sendFailed))
             false
         }
@@ -166,8 +199,13 @@ class NsuppSession(
         // "Yeni konu" bayrağı beklerken yoklama YAPILMAZ: `conversationId` yokken sunucu AÇIK
         // konuşmayı döndürür ve az önce temizlediğimiz eski mesajları geri getirirdi.
         if (yeniKonuBekliyor) return
+        val n = nesil.get()
         try {
             val r = api.poll(token, state.conversationId, lastTs)
+            // Uçuşta çıkış yapıldı: bu mesajlar ÇIKAN kullanıcınındı, temizlenen ekrana geri
+            // dökülemezler (bkz. [nesil]). Coroutine iptali bloklayan isteği kesmediği için bu
+            // yanıt reset'ten SONRA döner.
+            if (n != nesil.get()) return
             var next = state.copy(
                 conversationId = r.conversationId ?: state.conversationId,
                 operatorTyping = r.operatorTyping,
@@ -180,6 +218,7 @@ class NsuppSession(
             // KALICI hata (401/403/404 — oturum geçersiz, ziyaretçi engellendi) sessiz kalamaz:
             // döngü sonsuza kadar aynı hatayı alarak pili ve sunucuyu boşuna yakar, kullanıcı da
             // ekranın neden donduğunu anlamaz. `stopped` çağıranın döngüsünü durdurur.
+            if (n != nesil.get()) return
             if (e.isPermanent) {
                 stopped = true
                 emit(state.copy(error = e.message ?: "Oturum geçersiz"))
@@ -329,9 +368,15 @@ class NsuppSession(
      * Jetonu siler, ekrandaki her şeyi temizler ve döngünün durmasını işaretler. Bu olmadan
      * paylaşılan bir cihazda bir sonraki kullanıcı, öncekinin sohbet geçmişini açar — jeton
      * cihazda kalıcıdır ve kimliğe değil CİHAZA bağlıdır.
+     *
+     * UÇUŞTAKİ İSTEKLER DE GEÇERSİZDİR: `stopped` yalnız döngüyü durdurur ve [start] onu girişte
+     * `false` yapar; sunucuya çoktan gitmiş bir `/session`/`/identify` çağrısının yanıtı yine de
+     * döner. Nesil artışı o yanıtların hiçbir şey yazamamasını sağlar (bkz. [nesil]) — aksi hâlde
+     * silinen jeton geri gelirdi.
      */
     fun reset() {
         stopped = true
+        nesil.incrementAndGet()
         store.write(null)
         seen.clear()
         lastTs = null
@@ -383,8 +428,12 @@ class NsuppSession(
 
     private fun gonderKimlik(k: Kimlik): Boolean {
         val token = store.read() ?: return false
+        val n = nesil.get()
         return try {
             val r = api.identify(token, k.email, k.name, k.signature, k.attributes.ifEmpty { null })
+            // Uçuşta çıkış yapıldı: e-postayı SAKLAMAYIZ. Saklasaydık sonraki kullanıcının
+            // [setSessionData] çağrısı ÖNCEKİ kişinin CRM kaydına yazardı (bkz. [nesil]).
+            if (n != nesil.get()) return false
             kimlikEmail = k.email
             kimlikImza = k.signature
             emit(state.copy(identityStatus = r.identitySource ?: r.identity))
@@ -392,6 +441,7 @@ class NsuppSession(
         } catch (e: Exception) {
             // Kimlik hatası SESSİZ DÜŞMEZ: zorunluluk açıkken sunucu 403 döner ve entegrasyonu
             // kuran geliştirici sebebi göremezse "neden anonim görünüyor" sorusu çözümsüz kalır.
+            if (n != nesil.get()) return false
             emit(state.copy(error = e.message, identityStatus = e.message))
             false
         }

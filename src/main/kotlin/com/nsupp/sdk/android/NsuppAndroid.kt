@@ -93,7 +93,13 @@ object Nsupp {
      */
     @Volatile internal var webChat: NsuppWebChat? = null
         private set
-    private var scope: CoroutineScope? = null
+
+    /**
+     * ⚠️ `session` ile BİRLİKTE okunur ve `session != null` görüldüğünde DOLU olmak zorundadır
+     * (bkz. [init]) — bu yüzden `@Volatile`: aksi hâlde yazma başka bir iş parçacığında görünmeyip
+     * `reset()` sessizce no-op olurdu.
+     */
+    @Volatile private var scope: CoroutineScope? = null
     private var pollJob: Job? = null
     private var pendingPushToken: String? = null
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -104,13 +110,20 @@ object Nsupp {
     /**
      * @param appKey panelde Ayarlar → Uygulamalar'dan üretilen uygulama anahtarı. Alan adı kilidi
      *   AÇIK bir çalışma alanında yerel yüzeyin TEK geçiş yoludur; kilit kapalıysa boş bırakılabilir.
+     *
+     * `@Synchronized` + `session` ATAMASI EN SONDA — ikisi birden gerekli:
+     *  · Kilit, iki iş parçacığının aynı anda İKİ oturum kurmasını engeller (giriş koruması
+     *    `session != null` tek başına yarışı kapatmaz).
+     *  · Sıra, kilidi TUTMAYAN okurlar içindir: `session`ı gören her iş parçacığı `scope`u da
+     *    görmek ZORUNDA (`@Volatile` yazma sırası). Ters sırada, iki atama arasına düşen bir
+     *    `reset()` çağrısı `scope?.launch`ta no-op oluyordu — yani ÇIKIŞ sessizce hiç koşmuyordu.
      */
+    @Synchronized
     fun init(context: Context, apiBase: String, publicKey: String, appKey: String? = null) {
         if (session != null) return
         val cfg = NsuppConfig(apiBase, publicKey, appKey = appKey)
         val store = PrefsTokenStore(context, publicKey)
         val s = NsuppSession(NsuppApi(cfg, AndroidHttp()), store)
-        session = s
         // Sohbet arayüzü WebView'da; `NsuppSession` artık YALNIZ kimlik/bildirim/yapılandırma için.
         webChat = NsuppWebChat(cfg, store)
         // 🔴 TEK İŞ PARÇACIĞI: NsuppSession'ın durumu (state/seen/lastTs) korumasız alanlar — saf
@@ -120,6 +133,7 @@ object Nsupp {
         @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
         val seriIO = Dispatchers.IO.limitedParallelism(1)
         scope = CoroutineScope(SupervisorJob() + seriIO)
+        session = s
     }
 
     /**
@@ -235,14 +249,59 @@ object Nsupp {
      * Jetonu siler ve yoklamayı durdurur. Bu olmadan paylaşılan bir cihazda bir sonraki kullanıcı,
      * öncekinin sohbet geçmişini açar. Bekleyen anlık-bildirim jetonu da düşer: o jeton artık
      * ESKİ ziyaretçiye aitti.
+     *
+     * HANGİ İŞ PARÇACIĞINDAN ÇAĞRILIRSA ÇAĞRILSIN GÜVENLİDİR — ve iş İKİYE ayrılır, çünkü iki
+     * hedefin iş parçacığı sözleşmesi ZITTIR:
+     *
+     *  ① `session.reset()` → SERİ IO kanalı. `NsuppSession`ın durumu (`state`/`seen`/`lastTs`)
+     *     korumasız alanlardır ve bu sınıfın değişmezi onları `limitedParallelism(1)` ile seri
+     *     tutmaktır (bkz. [init]). `reset()` TEK İSTİSNAYDI: çağıranın iş parçacığında koşuyor,
+     *     yani uçuşta bir `pollOnce`/`send` varken `seen.clear()` diyordu — `pollOnce`un içindeki
+     *     `apply()` aynı `HashSet`i yazarken. Kuyruğa alınınca bu yapısal olarak imkânsız hâle
+     *     gelir; üstelik SIRA da düzelir: `pollJob.cancel()` BLOKLAYAN `HttpURLConnection`
+     *     okumasını KESMEZ, ama sıfırlama o okumanın ARKASINA dizildiği için son söz sıfırlamanın
+     *     olur (eskiden sıfırlama önce koşar, biten istek üstüne yazardı).
+     *  ② `webChat.reset()` → ANA iş parçacığı. Orada WebView'a dokunuluyor ve `WebView` yanlış iş
+     *     parçacığından çağrılınca çalışma-zamanı istisnası atar; satıcı çıkışı bir arka plan
+     *     işinden (ör. oturum kapatma ağ çağrısının geri-çağrımı) tetiklediğinde SDK ÇÖKÜYORDU.
+     *
+     * ── JETONU YALNIZ ① SİLER ────────────────────────────────────────────────────────────────
+     * İki yarı AYRI kuyruklardadır, dolayısıyla birbirlerine göre SIRASIZDIR. İkisi de depoya
+     * yazdığı sürece bir kayıp senaryosu vardı: ana iş parçacığı ekran geçişinde meşgulken yeni
+     * kullanıcı sohbeti açar, `start()` seri kanalda taze jetonu yazar, SONRA bekleyen ②
+     * drenaj olup `store.write(null)` ile onu SİLERDİ (yeni kullanıcı oturumunu ve geçmişini
+     * kaybeder, sunucuda öksüz ziyaretçi kalır). Artık silme TEK sahiplidir — seri kanal — ve ②
+     * yalnız WebView işi yapar (nesil artışı, script tazeleme, `loadUrl`); depoya ne yazar ne de
+     * okur. ②'yi ①'in ARKASINA dizmek çözüm DEĞİLDİ: uçuştaki bir yoklama okuması seri kanalı
+     * saniyelerce tutabilir ve çıkan kullanıcının sohbeti o kadar süre EKRANDA kalırdı.
+     *
+     * @param onComplete çıkış TAMAMLANDIĞINDA — jeton silinmiş, oturum durdurulmuş ve bekleyen
+     *   bildirim jetonu düşürülmüş olarak — ANA iş parçacığında çağrılır. Bu andan itibaren
+     *   `Nsupp.current?.visitorToken` `null`dur; satıcı "çıkışta jeton silindi" vaadini kendi
+     *   tarafında böyle doğrulayabilir. Sohbet YÜZEYİNİN yeniden yüklenmesi ayrı ve asenkrondur
+     *   (② yarısı); onu gözlemek isteyen `NsuppWebChat.onLoaded`ı kullanır.
      */
-    fun reset() {
+    fun reset(onComplete: (() -> Unit)? = null) {
+        // Yoklama ÖNCE ve SENKRON durur: kuyruğa alsaydık iptal, sıfırlamanın arkasına dizilirdi.
         onChatClosed()
-        pendingPushToken = null
-        session?.reset()
-        // Paylaşılan cihazda sonraki kullanıcı öncekinin sohbetini AÇMAMALI: jeton silinir ve
-        // sayfa sıfırlanır.
-        webChat?.reset()
+        val s = session
+        val sc = scope
+        if (sc == null) {
+            // SDK hiç `init` edilmedi: silinecek jeton da yok. Geri-çağrım YİNE de çalışır —
+            // hiç çalışmayan bir geri-çağrım satıcının çıkış akışını sessizce askıda bırakırdı.
+            if (onComplete != null) mainHandler.post { onComplete() }
+            return
+        }
+        sc.launch {
+            // Bekleyen anlık-bildirim jetonu da SERİ kanalda düşürülür: onu okuyan yer
+            // ([onChatOpened] döngüsü) aynı kanalda koşuyor.
+            pendingPushToken = null
+            s?.reset()
+            if (onComplete != null) mainHandler.post { onComplete() }
+        }
+        // Paylaşılan cihazda sonraki kullanıcı öncekinin sohbetini EKRANDA görmemeli: sayfa
+        // jetonsuz baştan yüklenir (kabuk jetonunu ① sildi).
+        mainHandler.post { webChat?.reset() }
     }
 
     /**

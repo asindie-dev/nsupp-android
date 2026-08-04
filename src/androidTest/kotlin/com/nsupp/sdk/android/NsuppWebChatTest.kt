@@ -50,8 +50,17 @@ import java.util.concurrent.TimeUnit
  *     ÇAĞRILMAZ, dolayısıyla bunu yalnız gerçek gezinme gösterir).
  *  6. `reset()` WebView'ın localStorage'ını GERÇEKTEN siliyor; jeton gelince script tazeleniyor ve
  *     tazelenen script depoyu SİLMİYOR.
+ *  6b. `reset()` KABUK deposuna hiç dokunmuyor (ne okuyor ne yazıyor): silme seri kanalın işidir,
+ *     bu yüzden geç drenaj olan bir çıkış YENİ oturumun taze jetonunu EZEMİYOR.
+ *  6c. Kurtarma bayrağı YÜZEY BAŞINA: bir yüzeyin kaçış hakkını tüketmesi diğerininkini
+ *     tüketmiyor.
  *  7. Kabukta jeton yokken bir sonraki açılışta ÖNCEKİ oturumun deposu siliniyor.
- *  8. Yüzey kapanınca WebView `destroy()` ediliyor ve alan yalnız SAHİBİ tarafından bırakılıyor.
+ *  8. Yüzey kapanınca WebView `destroy()` ediliyor ve kayıt yalnız SAHİBİ tarafından düşürülüyor.
+ *  9. NESİL KAPISI: `reset()` sonrası, yeni belge henüz commit olmamışken ESKİ belgenin postaladığı
+ *     jeton REDDEDİLİYOR — ama yeni belge commit olunca yazma yeniden AÇILIYOR.
+ * 10. YÜZEY KAYDI: iki yüzey açıkken `reset()` İKİSİNİ birden sıfırlıyor ve her yüzeyin kimlik
+ *     script'i AYRI tutamaçla tazeleniyor.
+ * 11. Şema allowlist'i GERÇEK TIKLAMADA da geçirmiyor (izinli şema pozitif kontrolüyle birlikte).
  *
  * ── BU DOSYA NEYİ KANITLAMIYOR (dürüst sınır) ────────────────────────────────────────────────
  *  · FAIL-CLOSED DALI: "WebView sürümü `DOCUMENT_START_SCRIPT`/`WEB_MESSAGE_LISTENER`
@@ -62,6 +71,12 @@ import java.util.concurrent.TimeUnit
  *    için WebView'ı eski bir sürüme düşürmüş bir cihaz gerekir — elimizde yok, uydurmuyoruz.
  *  · `originKurali == null` dalı (apiBase bir http(s) origin'ine ayrışmıyorsa) da aynı sebeple
  *    burada değil: `createWebView` o durumda gerçek bir sayfa yükleyemez.
+ *  · NESİL DAMGASI HANGİ GERİ-ÇAĞRIMDAN GELDİ: damga iki yerden konuyor — `onPageCommitVisible`
+ *    (dokümante commit anı) ve `onPageFinished` (çizilmeyen yüzeyler için emniyet ağı). Madde 9
+ *    "yeni belge yazabiliyor"u kanıtlar, hangisinin damgaladığını AYIRT ETMEZ. Ayırt etmek için
+ *    "commit oldu ama yükleme bitmedi" anında mesaj postalamak gerekirdi; o an testten
+ *    deterministik olarak yakalanamıyor (geri-çağrımın ana iş parçacığına düşmesi sayfanın
+ *    script'iyle sıralı değil) ve tek çare tekrar denemek olurdu — o da kusuru maskelerdi.
  *  · Gezinme MATRİSİ (madde 3 ve 4) gerçek `WebViewClient`e — `wv.webViewClient` ile WebView'dan
  *    GERİ OKUNAN, üretimde atanmış olan istemciye — doğrudan çağrı yapar; `WebResourceRequest`
  *    testte uygulanır. Bu bir saplama DEĞİLDİR (gerçek `android.webkit` arayüzüdür, imzasını
@@ -101,7 +116,7 @@ class NsuppWebChatTest {
 
     // ── Yardımcılar ──────────────────────────────────────────────────────────────────────────
 
-    /** Yazılan her değeri tutar — `reset()`in gerçekten null yazdığı iddiası buna dayanır. */
+    /** Yazılan her değeri SIRAYLA tutar — "kim depoya ne yazdı" iddiaları buna dayanır. */
     private class KayitliDepo(private var deger: String? = null) : NsuppTokenStore {
         val yazilanlar: MutableList<String?> = mutableListOf()
         override fun read(): String? = deger
@@ -465,7 +480,11 @@ class NsuppWebChatTest {
         bekle("reset sonrası sayfa yeniden yüklenmedi") { bizim.sonDamga(hostYolu) > oncekiDamga }
         sayfaBekle(k.wv, bizim)
 
-        assertEquals(listOf<String?>(null), k.depo.yazilanlar)
+        // KABUK deposuna DOKUNULMAZ. Silme seri kanalın işidir (`NsuppSession.reset()`); buradan
+        // yazmak, geç drenaj olan çıkışın YENİ oturumun jetonunu ezmesi demekti (bkz. aşağıdaki
+        // `reset_kabuk_deposuna_DOKUNMAZ…` testi).
+        assertEquals(emptyList<String?>(), k.depo.yazilanlar)
+        assertEquals("A-jetonu", k.depo.read())
         // Jeton diskteki localStorage'da duruyordu; `clearHistory` tek başına onu SİLMEZDİ.
         assertNull(jsMetin(k.wv, "localStorage.getItem('k')"))
         val kimlik = jsMetin(k.wv, "window.__kimlik") ?: ""
@@ -520,6 +539,254 @@ class NsuppWebChatTest {
         assertNull(jsMetin(ikinci.wv, "localStorage.getItem('k')"))
     }
 
+    /**
+     * A-K1 — ÇIKIŞTAN SONRA UÇUŞTA KALAN ESKİ BELGE JETONU GERİ YAZAMAZ.
+     *
+     * Kusur ölçülebilir bir pencerede yaşıyordu: `reset()` yeniden yüklemeyi BAŞLATIR ama yeni
+     * belge COMMIT olana kadar eski belge ekranda kalır ve JS'i koşar. O aralıkta düşen bir
+     * `/session` yanıtı köprüye jetonu postalıyor, kabuk da onu koşulsuz `store.write(jeton)`
+     * yapıyordu — çıkış yapan kullanıcının oturumu geri geliyordu.
+     *
+     * Pencere burada TAHMİNLE değil sunucuyu askıya alarak açılıyor: yeniden yükleme isteği
+     * sunucuya ulaşır, yanıt VERİLMEZ, dolayısıyla eski belge kesin olarak hâlâ ekrandadır.
+     */
+    @Test
+    fun reset_ucustaki_ESKI_belgenin_jetonunu_kabul_etmez() {
+        val bizim = sunucuAc()
+        bizim.koy(hostYolu, hostSayfasi())
+        val k = ac(bizim, jeton = "A-jetonu")
+        sayfaBekle(k.wv, bizim)
+
+        bizim.bekletmeAc(hostYolu)
+        val oncekiIstek = bizim.istekSayisi("GET $hostYolu")
+        anaIsParcaciginda { k.chat.reset() }
+        bekle("sıfırlamanın yeniden yükleme isteği sunucuya ulaşmadı") {
+            bizim.istekSayisi("GET $hostYolu") == oncekiIstek + 1
+        }
+
+        // ESKİ belge gerçekten ayakta ve köprüyü GÖRÜYOR — senaryo taklit değil.
+        assertEquals("object", jsMetin(k.wv, "window.__native"))
+        js(k.wv, "NsuppNative.postMessage(JSON.stringify({type:'visitorToken',token:'ESKI'})); 1")
+        anaKuyruguBosalt()
+        // Depoya HİÇ yazılmamış olmalı: ESKİ belgenin jetonu nesil kapısında reddedildi,
+        // sıfırlamanın kendisi ise depoya artık dokunmuyor (silme seri kanalın işi).
+        assertEquals(emptyList<String?>(), k.depo.yazilanlar)
+
+        // KAPI SÜREKLİ KAPALI DEĞİL. Bu ikinci yarı olmadan `onPostMessage`in başına konmuş düz bir
+        // `return` de testi geçerdi — yani test kapattığını iddia ettiği kusuru kanıtlamazdı.
+        //
+        // BARİYER `onLoaded` — damga ile AYNI geri-çağrımdan gelir, dolayısıyla "yeni belge artık
+        // güncel nesle ait" anı kesin olarak GEÇMİŞTİR. Sunucu damgasını beklemek YETMİYORDU:
+        // sayfanın kendi script'i koştuğunda kabuğun geri-çağrımı henüz ana iş parçacığına
+        // düşmemiş olabiliyor ve test, kusur olmadığı hâlde düşüyordu (ölçüldü).
+        val yuklendi = CountDownLatch(1)
+        anaIsParcaciginda { k.chat.onLoaded = { yuklendi.countDown() } }
+        bizim.bekletmeSurdur(hostYolu)
+        assertTrue("askı kalkınca yeni belge yüklenmedi", yuklendi.await(20, TimeUnit.SECONDS))
+        sayfaBekle(k.wv, bizim)
+
+        js(k.wv, "NsuppNative.postMessage(JSON.stringify({type:'visitorToken',token:'YENI'})); 1")
+        bekle("commit olmuş YENİ belge jeton yazamadı") {
+            k.depo.yazilanlar == listOf<String?>("YENI")
+        }
+    }
+
+    /**
+     * A-T2 — SIFIRLAMA KABUK DEPOSUNA DOKUNMAZ: GEÇ DRENAJ YENİ OTURUMU EZEMEZ.
+     *
+     * `Nsupp.reset()` iki yarıya ayrılır ve yarılar AYRI kuyruklardadır: oturum sıfırlaması seri IO
+     * kanalında, sayfa sıfırlaması ANA iş parçacığında. İkisi de depoya yazdığı sürece şu kayıp
+     * gerçekti: ana iş parçacığı ekran geçişinde 100-500 ms meşgulken yeni kullanıcı sohbeti açar,
+     * `start()` seri kanalda taze jetonu yazar, SONRA bekleyen sayfa sıfırlaması drenaj olup
+     * `store.write(null)` ile onu SİLERDİ — yeni kullanıcı oturumunu ve geçmişini kaybeder,
+     * sunucuda öksüz ziyaretçi kalırdı.
+     *
+     * Yarış burada TAHMİNLE değil SIRAYLA kuruluyor: "yeni oturumun jetonu" sıfırlama çağrısından
+     * ÖNCE depoya yazılıyor, yani sıfırlama tam da geç drenaj olan yarıyı temsil ediyor.
+     */
+    @Test
+    fun reset_kabuk_deposuna_DOKUNMAZ_yeni_oturumun_jetonunu_ezmez() {
+        val bizim = sunucuAc()
+        bizim.koy(hostYolu, hostSayfasi())
+        val k = ac(bizim, jeton = "A-jetonu")
+        sayfaBekle(k.wv, bizim)
+
+        // ÇIKIŞ BAŞLADI ve arada YENİ oturum açıldı (seri kanal jetonu yazdı).
+        k.depo.write("vt_YENI")
+        val yazilanSayisi = k.depo.yazilanlar.size
+
+        val oncekiDamga = bizim.sonDamga(hostYolu)
+        anaIsParcaciginda { k.chat.reset() } // …ve sayfa sıfırlaması ANCAK ŞİMDİ drenaj oldu
+        bekle("reset sonrası sayfa yeniden yüklenmedi") { bizim.sonDamga(hostYolu) > oncekiDamga }
+        sayfaBekle(k.wv, bizim)
+
+        assertEquals("YENİ oturumun jetonu silindi", "vt_YENI", k.depo.read())
+        assertEquals("reset depoya yazdı", yazilanSayisi, k.depo.yazilanlar.size)
+
+        // Depo OKUNMUYOR da: hayalet yüzey yeni kullanıcının jetonunu taşımaz, temiz açılır.
+        // (Okusaydık yarışın hangi tarafta olduğuna göre ya bayat ya da yabancı oturum yüklenirdi.)
+        val kimlik = jsMetin(k.wv, "window.__kimlik") ?: ""
+        assertTrue(kimlik, kimlik.contains("\"visitorToken\":null"))
+    }
+
+    /**
+     * A-T3 — KURTARMA BAYRAĞI YÜZEY BAŞINADIR (iki yönü de ölçülür).
+     *
+     * Ana belge kendi origin'imizin dışına kaçarsa (POST ile — `shouldOverrideUrlLoading` o yolda
+     * ÇAĞRILMAZ) kabuk yüklemeyi durdurup host sayfasına geri döner; bayrak bu kurtarmanın yalnız
+     * BİR KEZ denenmesini sağlar (kalıcı yanlış yapılandırmada sonsuz tur olmasın). Bayrak tekil
+     * bir alanken çok yüzeyli — DESTEKLENEN — yapılandırmada iki yönlü bozuluyordu:
+     *  (b) A hakkını tükettiyse B, İLK kaçışında hiç kurtarma denemeden hata basıyordu;
+     *  (a) yeni bir yüzeyin açılması bayrağı KÜRESEL olarak `false`a çekiyor, "yalnız bir deneme"
+     *      garantisini sınırsız "durdur → yeniden yükle" turuna çeviriyordu.
+     *
+     * ── ÖLÇÜT NİÇİN "HATA BASILDI MI", "İSTEK GİTTİ Mİ" DEĞİL ────────────────────────────────
+     * Kurtarmanın ağa çıkması PLATFORMA bağlı: `stopLoading()` yabancı belge COMMIT olmadan
+     * yetişirse hemen ardındaki `loadUrl` iptal oluyor (emülatörde ölçüldü — ki bu zararsızdır,
+     * belge zaten kendi sayfamızda kalır). Bayrağın KAPSAMI ise `onLoadFailed`ten deterministik
+     * okunur: hak varsa hata YOK, hak tükendiyse hata VAR.
+     *
+     * Kaçış burada gerçek gezinmeyle değil, WebView'DAN GERİ OKUNAN gerçek `WebViewClient`e
+     * doğrudan çağrıyla üretiliyor (bu dosyadaki gezinme matrisiyle aynı yöntem, sınırı da orada
+     * yazılı): gerçek POST kaçışının geri alındığını `post_ile_kacis_geri_alinir` gösteriyor,
+     * burada kanıtlanan şey bayrağın hangi nesneye AİT olduğu.
+     *
+     * Host yolu ASKIYA alınır: kurtarma yüklemesi tamamlansaydı `onPageFinished` bayrağı meşru
+     * olarak sıfırlar ve test hiçbir şeyi ayırt edemezdi.
+     */
+    @Test
+    fun kurtarma_bayragi_yuzey_basinadir() {
+        val bizim = sunucuAc()
+        bizim.koy(hostYolu, hostSayfasi())
+
+        val k = ac(bizim, jeton = null)
+        sayfaBekle(k.wv, bizim)
+        val ikinci = webViewAc { k.chat.createWebView(k.baglam) }
+        sayfaBekle(ikinci, bizim)
+
+        val hatalar = mutableListOf<String>()
+        anaIsParcaciginda { k.chat.onLoadFailed = { hatalar.add(it) } }
+        bizim.bekletmeAc(hostYolu)
+
+        val disAdres = "https://saldirgan.example/kacis"
+        val istemciA = istemci(k.wv)
+        val istemciB = istemci(ikinci)
+        fun kacir(wv: WebView, istemci: WebViewClient) =
+            anaIsParcaciginda { istemci.onPageStarted(wv, disAdres, null) }
+
+        // A hakkını TÜKETİR: ilk kaçış kurtarılır, hata yok.
+        kacir(k.wv, istemciA)
+        assertEquals("ilk kaçış kurtarılmalıydı", emptyList<String>(), hatalar)
+
+        // (b) B'nin İLK kaçışı: kendi hakkı DURUYOR. Tekil bayrakta burada hata basılıyordu.
+        kacir(ikinci, istemciB)
+        assertEquals("B, A'nın tükettiği hakla cezalandırıldı", emptyList<String>(), hatalar)
+
+        // (a) YENİ yüzey açmak A'nın tükenmiş hakkını GERİ VERMEZ. Tekil bayrakta `createWebView`
+        // bayrağı küresel olarak sıfırlıyordu → A ikinci kez kurtarma deniyor, hata basılmıyordu.
+        webViewAc { k.chat.createWebView(k.baglam) }
+        kacir(k.wv, istemciA)
+        assertEquals(listOf(DIS_YONLENDIRME), hatalar)
+
+        // Döngü koruması yüzey başına da AYNEN duruyor: B'nin ikinci kaçışı da hata basar.
+        kacir(ikinci, istemciB)
+        assertEquals(listOf(DIS_YONLENDIRME, DIS_YONLENDIRME), hatalar)
+    }
+
+    /**
+     * A-K3 — SIFIRLAMA TÜM YÜZEYLERE GİDER, HER YÜZEYİN SCRIPT'İ AYRI TAZELENİR.
+     *
+     * İki yüzey aynı anda canlı olabilir (satıcının düzenine gömülü görünüm + balon paneli).
+     * Kabuk tek bir `webView` alanı tuttuğunda `reset()` yalnız SONUNCUSUNU yeniden yüklüyordu:
+     * hayalet kalan yüzey çıkıştan sonra da eski oturumu gösteriyordu. `scriptHandler` de tekil
+     * olduğu için birinci yüzeyin kimlik script'i kurulduğu andaki hâlinde donuyordu.
+     */
+    @Test
+    fun reset_TUM_yuzeyleri_sifirlar_ve_her_yuzeyin_scripti_tazelenir() {
+        val bizim = sunucuAc()
+        bizim.koy(hostYolu, hostSayfasi())
+        val k = ac(bizim, jeton = "A-jetonu")
+        sayfaBekle(k.wv, bizim)
+        val ikinci = webViewAc { k.chat.createWebView(k.baglam) }
+        sayfaBekle(ikinci, bizim)
+
+        // İki belge de eski jetonla açıldı.
+        assertTrue(jsMetin(k.wv, "window.__kimlik") ?: "", (jsMetin(k.wv, "window.__kimlik") ?: "").contains("A-jetonu"))
+        assertTrue(jsMetin(ikinci, "window.__kimlik") ?: "", (jsMetin(ikinci, "window.__kimlik") ?: "").contains("A-jetonu"))
+
+        anaIsParcaciginda { k.chat.reset() }
+
+        // Damgayla beklenemez: iki belge iki AYRI damga alır, `sonDamga` yalnız sonuncusunu bilir.
+        // Sorulan şey zaten "her yüzeyde jetonsuz YENİ belge var mı".
+        bekle("BİRİNCİ yüzey sıfırlanmadı (hayalet yüzey eski oturumu gösteriyor)") {
+            (jsMetin(k.wv, "window.__kimlik") ?: "").contains("\"visitorToken\":null")
+        }
+        bekle("İKİNCİ yüzey sıfırlanmadı") {
+            (jsMetin(ikinci, "window.__kimlik") ?: "").contains("\"visitorToken\":null")
+        }
+
+        // Yeni jeton İKİNCİ yüzeyden gelsin…
+        js(ikinci, "NsuppNative.postMessage(JSON.stringify({type:'visitorToken',token:'YENI'})); 1")
+        bekle("jeton kabuğa ulaşmadı") { k.depo.yazilanlar.lastOrNull() == "YENI" }
+        anaKuyruguBosalt() // tazeleme `view.post` ile kuyruğa alınır
+
+        // …BİRİNCİ yüzey yeniden yüklendiğinde onu GÖRMELİ. Tutamaç tekil bir alanda tutulsaydı
+        // ikinci `createWebView` birincininkini üzerine yazar ve birinci yüzey sonsuza kadar
+        // "temizle + jetonsuz" diyen script'le kalırdı.
+        anaIsParcaciginda { k.wv.loadUrl(k.chat.hostUrl) }
+        bekle("BİRİNCİ yüzeyin kimlik script'i tazelenmemiş") {
+            (jsMetin(k.wv, "window.__kimlik") ?: "").contains("YENI")
+        }
+    }
+
+    /**
+     * ŞEMA ALLOWLIST'İ — GERÇEK TIKLAMA.
+     *
+     * `sema_allowlisti_disariya_da_iceriye_de_gecirmez` istemciyi DOĞRUDAN çağırıyor; bu test
+     * WebView'ın süzgeci gerçekten çağırdığını gösterir. Sıra tesadüf değil: tıklamalar aynı
+     * belgede sırayla üretilir ve gezinme kararları da aynı sırada ana iş parçacığına düşer,
+     * dolayısıyla izinli bağlantının niyeti geldiğinde yasak olanlar ÇOKTAN değerlendirilmiştir.
+     *
+     * `javascript:` BU TESTTE YOK — bilerek: `<a href="javascript:…">` tıklaması bir GEZİNME
+     * değildir, betik sayfanın kendi bağlamında koşar ve `shouldOverrideUrlLoading`e hiç uğramaz.
+     * Kabuğun sınırı orada değil, ORIGIN'dedir (betik yalnız kendi sayfamızda koşabilir); şema
+     * kapısının `javascript:`i eleyişi matris testinde ölçülüyor.
+     *
+     * DÜRÜST SINIR — `file:`: logcat ölçümü gösterdi ki gerçek tıklamada `intent:` ve özel şema
+     * bizim süzgecimize ULAŞIYOR ("izin verilmeyen şema, açılmadı: intent / bankauygulamasi"),
+     * `file:` ise ULAŞMIYOR — http belgesinden `file:`e gezinmeyi Chromium zaten kendisi reddediyor.
+     * Yani buradaki `file:` satırı SONUCU (açılmadı, belge değişmedi) doğrular; allowlist'imizin
+     * `file:`i elediğini matris testi gösteriyor.
+     */
+    @Test
+    fun sema_allowlisti_GERCEK_tiklamada_da_gecirmez() {
+        val bizim = sunucuAc()
+        bizim.koy(
+            hostYolu,
+            hostSayfasi(
+                """<a id="niyet" href="intent://x#Intent;scheme=http;end">i</a>
+                   <a id="ozel" href="bankauygulamasi://transfer?to=x">b</a>
+                   <a id="dosya" href="file:///data/data/com.nsupp.sdk.test/x">f</a>
+                   <a id="posta" href="mailto:a@b.c">m</a>"""
+            )
+        )
+        val k = ac(bizim)
+        sayfaBekle(k.wv, bizim)
+
+        for (id in listOf("niyet", "ozel", "dosya")) {
+            js(k.wv, "document.getElementById('$id').click(); 1")
+        }
+        // POZİTİF KONTROL: izinli şema gerçek tıklamada GEÇMELİ. Olmasaydı "hiç niyet çıkmadı"
+        // iddiası boş olurdu — tıklama süzgece hiç ulaşmıyor da olabilirdi.
+        js(k.wv, "document.getElementById('posta').click(); 1")
+        bekle("izinli şema gerçek tıklamada sisteme gitmedi") { k.baglam.niyetler.isNotEmpty() }
+        anaKuyruguBosalt()
+
+        assertEquals(listOf("mailto:a@b.c"), k.baglam.niyetler.map { it.data.toString() })
+        // Yasak şemalar WebView'ın İÇİNE de alınmadı: belge hâlâ kendi sayfamız.
+        assertEquals("${bizim.kok}$hostYolu", adres(k.wv))
+    }
+
     // ── 5) Yüzey kapanınca WebView YOK EDİLİR ────────────────────────────────────────────────
 
     @Test
@@ -547,5 +814,10 @@ class NsuppWebChatTest {
         bekle("komut canlı yüzeye ulaşmadı") { js(ikinci, "(window.__itilenler||[]).length") == "1" }
         val itilen = jsMetin(ikinci, "JSON.stringify(window.__itilenler)") ?: ""
         assertTrue(itilen, itilen.contains("chat:open") && itilen.contains("konusma-1"))
+    }
+
+    private companion object {
+        /** Kurtarma hakkı tükendiğinde kabuğun bastığı sebep — metni üretimden kopyalanmıştır. */
+        const val DIS_YONLENDIRME = "sohbet adresi kendi sunucumuzun dışına yönlendiriyor"
     }
 }

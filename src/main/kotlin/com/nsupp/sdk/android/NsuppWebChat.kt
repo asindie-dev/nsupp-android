@@ -20,6 +20,7 @@ import androidx.webkit.WebViewFeature
 import com.nsupp.sdk.NsuppConfig
 import com.nsupp.sdk.NsuppTokenStore
 import org.json.JSONObject
+import java.lang.ref.WeakReference
 
 /**
  * nsupp sohbet ekranı — **web widget'ının KENDİSİ**, yerel bir kopyası değil.
@@ -45,6 +46,14 @@ import org.json.JSONObject
  * yollarıyla veriliyor (`addDocumentStartJavaScript` + `addWebMessageListener`): ikisi de yalnız
  * origin'i eşleşen ÇERÇEVEye enjekte eder, dolayısıyla saldırgan belgesi ve opak origin'li
  * (`data:`/`srcdoc`/sandbox) çerçeveler köprüyü GÖREMEZ.
+ *
+ * ── İŞ PARÇACIĞI: ANA (UI) İŞ PARÇACIĞINA KAPALI ─────────────────────────────────────────────
+ * Bu sınıfın alanları KORUMASIZDIR ve öyle kalmalıdır: her giriş noktası ana iş parçacığındadır.
+ * `createWebView`/`destroyWebView` zaten WebView'ın kendi sözleşmesi gereği oradadır
+ * (`WebView` yanlış iş parçacığından çağrılınca çalışma-zamanı istisnası atar), `onPostMessage`
+ * androidx yüzeyinde `@UiThread`tir, `reset()` ise `Nsupp.reset()` tarafından ana iş parçacığına
+ * POSTALANIR (bkz. `NsuppAndroid.kt`). Bu kapatma olmadan `reset()` çağıranın iş parçacığında
+ * koşuyordu — yani satıcı çıkışı bir arka plan işinden tetiklediğinde WebView istisna atıyordu.
  */
 class NsuppWebChat(
     private val config: NsuppConfig,
@@ -54,17 +63,64 @@ class NsuppWebChat(
     var onLoadFailed: ((String) -> Unit)? = null
     var onLoaded: (() -> Unit)? = null
 
-    private var webView: WebView? = null
+    /**
+     * Bu köprüye bağlı CANLI yüzey — bir WebView + ONUN document-start tutamacı + üstündeki
+     * belgenin nesli.
+     *
+     * TEK ALAN DEĞİL LİSTE: aynı köprü aynı anda birden çok WebView besleyebilir (satıcının
+     * düzenine gömülü `NsuppWebChatView` + `NsuppChatPresenter`ın balon paneli + hazır
+     * `NsuppChatActivity`). Tek bir `webView` alanı tutulduğunda [reset] yalnız SONUNCUSUNU
+     * yeniden yüklüyordu: hayalet kalan yüzey çıkıştan sonra da ESKİ oturumu göstermeye devam
+     * ediyor, üstelik `scriptHandler` de tekil olduğu için o yüzeyin kimlik script'i bir daha
+     * HİÇ tazelenmiyordu (ikinci `createWebView` tutamacı üzerine yazıyordu).
+     *
+     * WebView ZAYIF tutulur: bu köprü `Nsupp.webChat` üzerinden uygulama ömrü boyunca yaşar;
+     * güçlü tutsaydık `destroyWebView` çağrılmayan her yol (satıcı hatası) yok edilmiş bir
+     * Activity'nin bütün görünüm ağacını canlı tutardı.
+     */
+    private class Yuzey(webView: WebView, nesil: Int) {
+        private val ref = WeakReference(webView)
 
-    /** Document-start script'inin tutamacı — jeton değişince SÖKÜLÜP yeniden eklenir. */
-    private var scriptHandler: ScriptHandler? = null
+        val webView: WebView? get() = ref.get()
+
+        /** Bu yüzeyin document-start script tutamacı — jeton değişince SÖKÜLÜP yeniden eklenir. */
+        var scriptHandler: ScriptHandler? = null
+
+        /**
+         * Bu yüzeyde ŞU AN duran belgenin nesli; `null` = "sıfırlamadan sonra henüz yeni belge
+         * commit olmadı", yani ekrandaki belge ESKİ oturuma ait ve jeton YAZAMAZ.
+         */
+        var belgeNesli: Int? = nesil
+
+        /**
+         * Bu yüzeyin ana belgesi bir kez kendi origin'imizin dışına kaçtı mı (bkz. [onPageStarted]
+         * kurtarması). Bayrak DÖNGÜ koruması: sayfamız kalıcı olarak dışarı yönlendiriyorsa
+         * (yanlış yapılandırma) sonsuz "durdur → yeniden yükle" turu yerine hata gösterilir.
+         *
+         * YÜZEY BAŞINA, tekil alan DEĞİL: çok yüzey DESTEKLENEN yapılandırmadır (bkz. [Yuzey]).
+         * Tekil alanda iki yönlü bozulma vardı — (a) B yüzeyinin açılışı/yüklenmesi A'nın
+         * bayrağını `false`a çekiyor ve "yalnız bir deneme" garantisini sınırsız tura çeviriyordu,
+         * (b) A bayrağı tükettiyse B İLK kaçışında hiç kurtarma denemeden hata basıyordu.
+         */
+        var kurtarmaDenendi = false
+    }
+
+    private val yuzeyler = mutableListOf<Yuzey>()
 
     /**
-     * Ana belge bir kez kendi origin'imizin dışına kaçtı mı (bkz. [onPageStarted] kurtarması).
-     * Bayrak DÖNGÜ koruması: ana sayfamız kalıcı olarak dışarı yönlendiriyorsa (yanlış yapılandırma)
-     * sonsuz "durdur → yeniden yükle" turu yerine kullanıcıya hata gösterilir.
+     * OTURUM NESLİ (epok). [reset] her çağrıldığında artar.
+     *
+     * NİÇİN: [reset] sırası nesil artışı → script tazele (jetonsuz) → `loadUrl`. Yeni gezinme COMMIT
+     * olana kadar ESKİ belge yaşamaya devam eder ve o aralıkta düşen bir `/session` yanıtı jetonu
+     * köprüye postalayabilir. Kapı olmadan [dinleyici] bunu `store.write(jeton)` diye kabul
+     * ediyordu: çıkış yapan kullanıcının jetonu geri geliyor ve tazelenen script onu YENİ belgeye
+     * taşıyordu.
+     *
+     * Nesli mesajın KENDİSİNDEN okumuyoruz — sayfa (uzak içerik) kendi neslini uydurabilirdi ve
+     * `widget.js` böyle bir alan da göndermez. Nesil, mesajı GÖNDEREN BELGEnin kimliğinden gelir:
+     * damga yalnız bizim tetiklediğimiz yüklemenin geri-çağrımından konur (bkz. [nesliDamgala]).
      */
-    private var kurtarmaDenendi = false
+    private var nesil = 0
 
     /**
      * Widget'ın açılacağı adres — SUNUCUDAKİ host sayfası.
@@ -101,11 +157,14 @@ class NsuppWebChat(
      */
     @SuppressLint("SetJavaScriptEnabled")
     fun createWebView(context: Context): WebView {
-        if (webView != null) {
-            // AYNI ANDA TEK YÜZEY: komutlar (bildirimden konuşma açma, çıkışta sıfırlama) aşağıda
-            // saklanan SON WebView'a gider; önceki yüzey sessizce komutsuz kalırdı — sessiz kilit
+        // Serbest bırakılmış yüzeyler birikmesin (satıcı `destroyWebView` çağırmadan görünümü
+        // bıraktıysa kayıt işe yaramaz durumdadır).
+        yuzeyler.removeAll { it.webView == null }
+        if (yuzeyler.isNotEmpty()) {
+            // Sıfırlama TÜM yüzeylere gider (bkz. [Yuzey]); ama KOMUT (bildirimden konuşma açma)
+            // tek bir yüzeye — kullanıcının o an baktığı, yani EN SON yaratılana. Sessiz kilit
             // teşhis edilemez, en azından sebebi logcat'e yazılır.
-            Log.w(TAG, "ikinci sohbet yüzeyi açıldı; öncekine artık komut gitmiyor")
+            Log.w(TAG, "ikinci sohbet yüzeyi açıldı; komutlar yalnız en son yüzeye gidiyor")
         }
         val wv = WebView(context.applicationContext)
         wv.settings.javaScriptEnabled = true
@@ -124,18 +183,43 @@ class NsuppWebChat(
         wv.settings.setSupportMultipleWindows(false)
         wv.setBackgroundColor(Color.TRANSPARENT)
 
-        webView = wv
-        kurtarmaDenendi = false
+        // Yeni yüzey GÜNCEL nesle doğar: kaydın hemen ardından `loadUrl(hostUrl)` çağrılıyor,
+        // yani üstüne gelecek ilk belge tanım gereği bu nesle aittir.
+        val yuzey = Yuzey(wv, nesil)
+        yuzeyler.add(yuzey)
         // Köprü loadUrl'den ÖNCE kurulur: document-start script'i yalnız "çağrı döndükten SONRA
         // yüklenmeye başlayan" çerçevelerde çalışır.
-        kopruyuKur(wv)
+        kopruyuKur(yuzey, wv)
 
         wv.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
-                // Kendi sayfamız gerçekten tamamlandı → kurtarma bayrağı sıfırlanır. Bayrağı
-                // onPageStarted'ta sıfırlamak döngü korumasını işlevsiz bırakırdı.
-                if (url != null && ayniOrigin(Uri.parse(url))) kurtarmaDenendi = false
+                // Kendi sayfamız gerçekten tamamlandı → BU YÜZEYİN kurtarma bayrağı sıfırlanır.
+                // Bayrağı onPageStarted'ta sıfırlamak döngü korumasını işlevsiz bırakırdı.
+                if (url != null && ayniOrigin(Uri.parse(url))) yuzey.kurtarmaDenendi = false
+                // İKİNCİ DAMGA YOLU — bkz. [nesliDamgala]. `onPageCommitVisible` ÇİZİME bağlıdır
+                // ve hiç çizilmeyen bir yüzeyde (ör. `View.GONE` panel) gecikebilir; `onPageFinished`
+                // javadoc'a göre ana çerçeve yüklemesi için çizimden BAĞIMSIZ olarak çağrılır ve
+                // commit'ten sonradır. Damga idempotenttir, iki yoldan gelmesi zararsızdır.
+                nesliDamgala(view, url)
                 onLoaded?.invoke()
+            }
+
+            /**
+             * YENİ BELGE COMMIT OLDU → bu yüzey artık GÜNCEL nesle ait (bkz. [nesil]).
+             *
+             * Kanca `onPageStarted` DEĞİL: javadoc'u "a page has started loading" der ve `url`
+             * parametresini "The url to be loaded" diye tanımlar — yani henüz commit YOKTUR, eski
+             * belge hâlâ ekrandadır ve JS'i koşmaktadır. Orada damgalamak kapıyı tam da kapatmak
+             * istediğimiz aralıkta açık bırakırdı.
+             *
+             * `onPageCommitVisible` javadoc'u ise tam bu anı tarif ediyor: "content left over from
+             * previous page navigations will no longer be drawn … called at the earliest point at
+             * which it can be guaranteed that WebView#onDraw will no longer draw any content from
+             * previous navigations … called when the body of the HTTP response has started loading,
+             * is reflected in the DOM". iOS'taki `didCommit`in Android karşılığı budur.
+             */
+            override fun onPageCommitVisible(view: WebView?, url: String?) {
+                nesliDamgala(view, url)
             }
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
@@ -146,11 +230,11 @@ class NsuppWebChat(
                 if (url == null || url == "about:blank") return
                 if (ayniOrigin(Uri.parse(url))) return
                 view?.stopLoading()
-                if (kurtarmaDenendi) {
+                if (yuzey.kurtarmaDenendi) {
                     onLoadFailed?.invoke("sohbet adresi kendi sunucumuzun dışına yönlendiriyor")
                     return
                 }
-                kurtarmaDenendi = true
+                yuzey.kurtarmaDenendi = true
                 view?.loadUrl(hostUrl)
             }
 
@@ -201,21 +285,22 @@ class NsuppWebChat(
      * Yüzey kapandı — WebView'ı BIRAK ve YOK ET.
      *
      * ZORUNLU, isteğe bağlı bir temizlik değil. İki sebep:
-     *  · SIZINTI: bu sınıf `Nsupp.webChat` üzerinden uygulama ömrü boyunca yaşar. [webView] alanı
-     *    null'lanmazsa, WebView'ın `parent` zinciri (gömülü görünüm → … → DecorView) YOK EDİLMİŞ
-     *    Activity'nin tüm görünüm ağacını canlı tutar. Alan tek başına null'lansa bile WebView'ın
-     *    kendisi yok edilmeden ağdan/işlemciden çekilmez.
+     *  · SIZINTI: bu sınıf `Nsupp.webChat` üzerinden uygulama ömrü boyunca yaşar. Yüzey kaydı
+     *    düşmezse WebView'ın `parent` zinciri (gömülü görünüm → … → DecorView) YOK EDİLMİŞ
+     *    Activity'nin tüm görünüm ağacını canlı tutar. (Kayıt WebView'ı ZAYIF tutar, ama zayıf
+     *    referans yalnız SIZINTIYI önler; WebView yok edilmeden ağdan/işlemciden çekilmez.)
      *  · YOKLAMA DURMAZ: sohbet sayfası (widget.js) kendi yoklamasını yapar. Yok edilmeyen bir
      *    WebView ekran kapandıktan sonra da yoklamayı sürdürür — pil, veri ve sunucu yükü.
      *
-     * `wv` KİMLİK KARŞILAŞTIRMASI şart: aynı anda ikinci bir yüzey açılmışsa [webView] ARTIK ona
-     * aittir; koşulsuz null'lamak canlı yüzeyi sessizce komutsuz bırakırdı.
+     * `wv` KİMLİK KARŞILAŞTIRMASI şart: yalnız KAPANAN yüzeyin kaydı düşer; aynı anda açık duran
+     * başka bir yüzeyin kaydını da silmek onu sessizce komutsuz ve sıfırlanamaz bırakırdı.
      *
      * ÇAĞIRAN, WebView'ı görünüm ağacından ÖNCE çıkarır (`WebView.destroy` javadoc'u: "This method
      * should be called after this WebView has been removed from the view system").
      */
     fun destroyWebView(wv: WebView) {
-        if (webView === wv) webView = null
+        // Serbest bırakılmış kayıtlar da bu vesileyle temizlenir.
+        yuzeyler.removeAll { it.webView === wv || it.webView == null }
         try {
             // Sürmekte olan yükleme `destroy`dan sonra geri-çağrım üretmesin.
             wv.stopLoading()
@@ -225,51 +310,103 @@ class NsuppWebChat(
         }
     }
 
-    /** Sohbeti belirli bir konuşmada aç (bildirimden derin bağlantı). */
+    /**
+     * Sohbeti belirli bir konuşmada aç (bildirimden derin bağlantı).
+     *
+     * Komut TEK yüzeye gider — EN SON yaratılan CANLI olana. Sıfırlamadan farkı burada: "çıkışta
+     * her şey temizlensin" TÜM yüzeyleri ilgilendirir, "bildirime dokunulan konuşmayı aç" ise
+     * kullanıcının o an baktığı yüzeyi.
+     */
     fun openConversation(id: String) {
         val guvenli = JSONObject.quote(id)
-        webView?.evaluateJavascript("window.\$nsupp && window.\$nsupp.push(['do','chat:open',$guvenli]);", null)
+        val wv = yuzeyler.lastOrNull { it.webView != null }?.webView ?: return
+        wv.evaluateJavascript("window.\$nsupp && window.\$nsupp.push(['do','chat:open',$guvenli]);", null)
     }
 
     /**
-     * Çıkışta: jetonu sil ve sayfayı sıfırla. Paylaşılan cihazda sonraki kullanıcı öncekinin
-     * sohbetini AÇMAMALI.
+     * Çıkışta: SAYFAYI sıfırla — jetonsuz, temiz bir belgeye dön. Paylaşılan cihazda sonraki
+     * kullanıcı öncekinin sohbetini AÇMAMALI.
      *
      * `clearHistory()` TEK BAŞINA YETMİYORDU: yalnız geri/ileri yığınını siler. Jeton asıl olarak
      * WebView'ın localStorage'ında durur ve Android'de o depo DİSKE yazılır — süreç ölümünü de
      * uygulama yeniden açılışını da atlatır. Temizlik bu yüzden sayfanın kendi bağlamında,
      * sayfanın JS'i çalışmadan ÖNCE yapılır (bkz. [baslangicScripti]).
+     *
+     * TÜM YÜZEYLER: yalnız sonuncusunu yeniden yüklemek, hayalet kalan yüzeyin çıkıştan sonra da
+     * eski oturumu göstermesi ve jetonu geri yazması demekti (bkz. [Yuzey]).
+     *
+     * ── KABUK JETONUNU BU METOT SİLMEZ ───────────────────────────────────────────────────────
+     * Silme SERİ kanalın işidir (`NsuppSession.reset()`, bkz. `NsuppAndroid.kt`). Burası ANA iş
+     * parçacığıdır ve iki kuyruk birbirine göre SIRASIZDIR: buradan `store.write(null)` demek,
+     * ana iş parçacığı 100-500 ms meşgulken çıkış yapan kullanıcının silme işleminin, ARADA açılan
+     * YENİ oturumun taze jetonunu (`start()` seri kanalda yazar) silmesi demekti — yeni kullanıcı
+     * geçmişini kaybediyor, sunucuda öksüz ziyaretçi kalıyordu.
+     *
+     * Aynı sebeple depo OKUNMAZ da: [scriptiTazele] burada `cikis = true` ile çağrılır ve kimlik
+     * script'i KOŞULSUZ "temizle + jeton yok" olur. Okusaydık yarışın hangi tarafta olduğuna göre
+     * ya çıkan kullanıcının bayat jetonunu ya da yeni kullanıcının jetonunu hayalet yüzeye
+     * taşırdık; çıkışta doğru içerik ikisinde de AYNI: temiz sayfa. Yeni jeton geldiğinde script
+     * zaten tazelenir ([dinleyici]).
+     *
+     * ⚠️ ANA İŞ PARÇACIĞI. Burada WebView'a dokunuluyor; `Nsupp.reset()` bu çağrıyı ana iş
+     * parçacığına postalar (bkz. sınıf belgesi).
      */
     fun reset() {
-        store.write(null)
-        kurtarmaDenendi = false
-        val wv = webView
-        // `scriptHandler == null` + canlı WebView = köprü kurulurken İSTİSNA oldu: ortada
-        // tazelenecek script yok, dolayısıyla bu dal hiçbir şey temizlemeden döner ve çıkış
-        // SESSİZCE yalan söylerdi. O durumda aşağıdaki sayfa-bağlamı temizliğine düşülür.
-        if (originKurali != null && ozelliklerDestekli() && (wv == null || scriptHandler != null)) {
-            // Script yeniden eklenince (jeton artık null) başına `localStorage.clear()` gelir ve
-            // yeni belge yüklenmeden ÖNCE çalışır. WebView henüz yaratılmadıysa yapılacak bir şey
-            // yok: bir sonraki `createWebView` zaten temizleyen script'i kurar.
-            scriptiTazele()
-            wv?.clearHistory()
-            wv?.loadUrl(hostUrl)
+        // Ekranda duran belgelerin HEPSİ artık bayat: yenisi commit olana kadar hiçbiri jeton
+        // yazamaz. Nesil ARTIŞI yeniden yükleme başlamadan ÖNCE yapılır — arada düşen bir mesaj
+        // silinmiş oturumu geri getirmesin.
+        nesil += 1
+        yuzeyler.removeAll { it.webView == null }
+        yuzeyler.forEach {
+            it.belgeNesli = null
+            // Sıfırlama taze bir yükleme başlatıyor: her yüzey kurtarma hakkını yeniden kazanır.
+            it.kurtarmaDenendi = false
+        }
+        val canlilar = yuzeyler.filter { it.webView != null }
+        if (canlilar.isEmpty()) {
+            // Yapacak bir şey yok: bir sonraki `createWebView` zaten temizleyen script'i kurar
+            // (o an kabuk deposu boştur — silme seri kanalda ağ beklemeden koşar)…
+            if (originKurali != null && ozelliklerDestekli()) return
+            // …ama köprü hiç kurulamıyorsa o script de olmayacak. SON ÇARE: `deleteAllData` bir
+            // SINGLETON üzerinden çalışır ve UYGULAMA GENELİdir (satıcının kendi WebView verisi de
+            // gider) — bu yüzden yalnız burada.
+            try {
+                WebStorage.getInstance().deleteAllData()
+            } catch (e: Exception) {
+                Log.w(TAG, "depo temizlenemedi: " + e)
+            }
             return
         }
-        if (wv != null) {
-            // Köprü kurulamadı (eski WebView sürümü): temizliği sayfa bağlamında çalıştır ve
-            // BİTİNCE yeniden yükle — sıra garantisi geri-çağrımdan gelir, tahminden değil.
+        // Script yeniden eklenince (çıkış: jeton KOŞULSUZ null) başına `localStorage.clear()` gelir
+        // ve yeni belge yüklenmeden ÖNCE çalışır. Tazeleme yüklemelerden ÖNCE, TEK seferde.
+        scriptiTazele(cikis = true)
+        for (y in canlilar) {
+            val wv = y.webView ?: continue
             wv.clearHistory()
-            wv.evaluateJavascript(TEMIZLE_JS) { wv.loadUrl(hostUrl) }
-            return
+            if (y.scriptHandler != null) {
+                wv.loadUrl(hostUrl)
+            } else {
+                // `scriptHandler == null` = bu yüzeyde köprü kurulamadı (eski WebView sürümü ya da
+                // kurulumda istisna): temizlenecek bir document-start script'i YOK, dolayısıyla
+                // yalnız yeniden yüklemek çıkışı SESSİZCE yalan yapardı. Temizliği sayfa bağlamında
+                // çalıştır ve BİTİNCE yeniden yükle — sıra garantisi geri-çağrımdan gelir.
+                wv.evaluateJavascript(TEMIZLE_JS) { wv.loadUrl(hostUrl) }
+            }
         }
-        // SON ÇARE: ne köprü ne canlı WebView var. `deleteAllData` bir SINGLETON üzerinden çalışır
-        // ve UYGULAMA GENELİdir (satıcının kendi WebView verisi de gider) — bu yüzden en sonda.
-        try {
-            WebStorage.getInstance().deleteAllData()
-        } catch (e: Exception) {
-            Log.w(TAG, "depo temizlenemedi: " + e)
-        }
+    }
+
+    /**
+     * Bu yüzeydeki belgeyi GÜNCEL nesle damgala — artık jeton yazabilir.
+     *
+     * YALNIZ KENDİ ORIGIN'İMİZ: POST kaçışı sırasında yabancı bir belge de commit olabilir
+     * (bkz. [onPageStarted] kurtarması). Köprü zaten origin'e bağlı olduğu için o belge mesaj
+     * postalayamaz; damgalamamak kapıyı ikinci kez kapatır ve "damga = bizim belgemiz" değişmezini
+     * korur.
+     */
+    private fun nesliDamgala(view: WebView?, url: String?) {
+        if (view == null || url == null || url == "about:blank") return
+        if (!ayniOrigin(Uri.parse(url))) return
+        yuzeyler.firstOrNull { it.webView === view }?.belgeNesli = nesil
     }
 
     /** İki androidx yolu da destekleniyor mu — köprü ancak İKİSİ birden varsa kurulur. */
@@ -280,7 +417,7 @@ class NsuppWebChat(
         false
     }
 
-    private fun kopruyuKur(wv: WebView) {
+    private fun kopruyuKur(yuzey: Yuzey, wv: WebView) {
         val kural = originKurali
         if (kural == null) {
             // Sessiz kilit yasak: yükleme de başarısız olacağı için kullanıcı `onLoadFailed`
@@ -297,9 +434,9 @@ class NsuppWebChat(
         val kurallar = setOf(kural)
         try {
             WebViewCompat.addWebMessageListener(wv, "NsuppNative", kurallar, dinleyici)
-            scriptHandler = WebViewCompat.addDocumentStartJavaScript(wv, baslangicScripti(), kurallar)
+            yuzey.scriptHandler = WebViewCompat.addDocumentStartJavaScript(wv, baslangicScripti(), kurallar)
         } catch (e: Exception) {
-            scriptHandler = null
+            yuzey.scriptHandler = null
             Log.w(TAG, "köprü kurulamadı: " + e)
         }
     }
@@ -310,9 +447,13 @@ class NsuppWebChat(
      * DEĞİŞMEZ — **kabuk deposu tek doğruluk kaynağıdır**: kabukta jeton yoksa WebView'daki depo
      * BAYATTIR (çıkış yapıldı ya da uygulama silinip kuruldu) ve sayfa onu okumadan silinir.
      * Bu olmadan `widget.js` önce localStorage'a baktığı için ÖNCEKİ kullanıcının oturumu açılırdı.
+     *
+     * @param cikis ÇIKIŞ script'i: depoya HİÇ bakılmaz, jeton koşulsuz yok sayılır. Gerekçe
+     *   [reset] belgesinde — çıkış anında depo iki kuyruğun yarışındadır, okumak hayalet yüzeye
+     *   yanlış oturumu taşırdı.
      */
-    private fun baslangicScripti(): String {
-        val jeton = store.read()
+    private fun baslangicScripti(cikis: Boolean = false): String {
+        val jeton = if (cikis) null else store.read()
         val anahtar = config.appKey
         val temizle = if (jeton == null) TEMIZLE_JS else ""
         val a = if (anahtar == null) "null" else JSONObject.quote(anahtar)
@@ -325,16 +466,23 @@ class NsuppWebChat(
      *
      * Tazelenmezse aynı WebView içindeki bir yeniden yükleme, yeni alınmış jetonu "temizle + null"
      * diyen BAYAT script'le silerdi — kullanıcı sohbetin ortasında geçmişini kaybederdi.
+     *
+     * TÜM YÜZEYLER, her birinin KENDİ tutamacıyla: tutamaç tekil bir alanda tutulduğunda ikinci
+     * `createWebView` birincininkini üzerine yazıyordu ve birinci yüzeyin script'i kurulduğu
+     * andaki jetonla sonsuza kadar donuyordu.
      */
-    private fun scriptiTazele() {
-        val wv = webView ?: return
+    private fun scriptiTazele(cikis: Boolean = false) {
         val kural = originKurali ?: return
-        if (scriptHandler == null) return // köprü hiç kurulmadı → tazelenecek script de yok
-        try {
-            scriptHandler?.remove()
-            scriptHandler = WebViewCompat.addDocumentStartJavaScript(wv, baslangicScripti(), setOf(kural))
-        } catch (e: Exception) {
-            Log.w(TAG, "script tazelenemedi: " + e)
+        val kod = baslangicScripti(cikis)
+        for (y in yuzeyler) {
+            val wv = y.webView ?: continue
+            if (y.scriptHandler == null) continue // köprü kurulmadı → tazelenecek script de yok
+            try {
+                y.scriptHandler?.remove()
+                y.scriptHandler = WebViewCompat.addDocumentStartJavaScript(wv, kod, setOf(kural))
+            } catch (e: Exception) {
+                Log.w(TAG, "script tazelenemedi: " + e)
+            }
         }
     }
 
@@ -367,6 +515,17 @@ class NsuppWebChat(
             // DOM storage kapalı olabilir; jetonu KABUK saklar, yoksa her açılış YENİ ziyaretçi
             // üretir ve geçmiş kaybolurdu.
             if (jeton.isEmpty()) return
+            // NESİL KAPISI — mesajı gönderen BELGE hâlâ güncel oturuma mı ait?
+            //
+            // `reset()` nesli artırır ve her yüzeyin damgasını düşürür; damga yalnız yeni bir belge
+            // COMMIT olduğunda geri konur. Yani çıkıştan sonra, henüz ölmemiş ESKİ belgeden düşen
+            // bir `/session` yanıtı burada YOK SAYILIR — kabul edilseydi çıkan kullanıcının jetonu
+            // depoya geri gelir ve tazelenen script onu yeni belgeye taşırdı.
+            //
+            // Yüzey bulunamazsa da yazmıyoruz (fail-closed): kaydı düşmüş bir WebView'dan gelen
+            // mesajın hangi oturuma ait olduğunu söyleyemeyiz.
+            val yuzey = yuzeyler.firstOrNull { it.webView === view } ?: return
+            if (yuzey.belgeNesli != nesil) return
             store.write(jeton)
             // `onPostMessage` androidx API yüzeyinde `@UiThread`tir, tazeleme çağrısı da öyle;
             // yine de kuyruğa alınıyor: geri-çağrımın İÇİNDE dinleyici/script topolojisini

@@ -185,9 +185,12 @@ içindir (kimlik, anlık bildirim, kendi ekranınızda göstermek istediğiniz m
   değil: balon sohbet açılmadan önce görünür, o an widget yapılandırması henüz indirilmemiştir —
   rengi ağdan beklemek balonun geç ve renk atlayarak belirmesi demekti. Kendi ikonunuzu istiyorsanız
   `EKRAN` kipini kullanıp düğmeyi siz koyun.
-- **Aynı anda tek sohbet yüzeyi tutun.** Panel, gömülü görünüm ve `NsuppChatActivity` aynı köprüyü
-  paylaşır; ikisi birden canlıyken komutlar (bildirimden konuşma açma, çıkışta sıfırlama) yalnız en
-  son açılan yüzeye gider. İkinci yüzey açıldığında logcat'e `NsuppWebChat` etiketiyle uyarı düşer.
+- **Birden çok sohbet yüzeyi açabilirsiniz; çıkış hepsini kapsar.** Panel, gömülü görünüm ve
+  `NsuppChatActivity` aynı köprüyü paylaşır. `Nsupp.reset()` **canlı yüzeylerin HEPSİNİ** sıfırlar
+  (her birinin kimlik script'i ayrı tazelenir) — hayalet bir yüzeyin çıkıştan sonra eski oturumu
+  göstermeye devam etmesi mümkün değildir. **Komutlar** (bildirimden konuşma açma) ise tek yüzeye,
+  **en son açılana** gider: kullanıcının o an baktığı yüzey odur. İkinci yüzey açıldığında logcat'e
+  `NsuppWebChat` etiketiyle bilgi düşer.
 - **Sohbet yüzeyi kapanınca WebView yok edilir.** `NsuppWebChatView` görünüm ağacından ayrılınca ve
   `NsuppChatActivity` kapanınca WebView `destroy()` edilir. Yok edilmeseydi, uygulama ömrü boyunca
   yaşayan köprü ölü Activity'nin görünüm ağacını canlı tutar ve widget'ın **kendi yoklaması sürerdi**
@@ -293,6 +296,26 @@ Nsupp.article("iade")
 
 **Çıkışta `reset()` çağırın.** Ziyaretçi jetonu kimliğe değil **cihaza** bağlıdır; çağırmazsanız
 paylaşılan bir cihazda sonraki kullanıcı öncekinin sohbet geçmişini açar.
+`Nsupp.reset()` **hangi iş parçacığından çağrılırsa çağrılsın güvenlidir**: oturum sıfırlaması
+SDK'nın seri kanalına dizilir (uçuştaki bir isteğin ARKASINA — böylece son söz sıfırlamanın olur),
+WebView sıfırlaması ise ana iş parçacığına postalanır. Çıkışı bir ağ geri-çağrımından tetikleyebilirsiniz.
+
+**`reset()` ASENKRONDUR — "bitti" anını geri-çağrımdan okuyun.** Çağrı hemen döner; hemen ardından
+okunan `Nsupp.current?.visitorToken` hâlâ ESKİ jetonu gösterebilir. Çıkışın tamamlandığını
+gözlemek (ve "çıkışta jeton silindi"yi kendi tarafınızda doğrulamak) istiyorsanız:
+
+```kotlin
+Nsupp.reset {
+    // ANA iş parçacığında çalışır; bu andan itibaren visitorToken null'dır.
+    girisEkraninaDon()
+}
+```
+
+Sohbet **yüzeyinin** yeniden yüklenmesi bundan bağımsız ve asenkrondur — jetonu silen tek yer
+SDK'nın seri kanalıdır, WebView tarafı yalnız sayfayı jetonsuz baştan yükler. (İkisi de depoya
+yazsaydı, çıkış sırasında açılan YENİ bir oturumun taze jetonu geç drenaj olan sayfa
+sıfırlamasıyla silinebilirdi.) `presenter.reset()` kullanıyorsanız geri-çağrım için doğrudan
+`Nsupp.reset { … }` çağırın; panel kapatma `presenter.dismiss()` ile ayrıca yapılır.
 
 **CSAT:** konuşma çözülüp puanlanmadıysa `pendingRating` true olur ve hazır ekran 1–5 sorar. Kendi
 arayüzünüzde yok sayarsanız mobil kanal memnuniyet ölçümünün dışında kalır.
@@ -322,12 +345,23 @@ başka bir uygulamanın derin bağlantısını tetiklemesi böylece engellenir; 
 şemanızı sohbete koyarsanız **açılmaz** (logcat'e uyarı düşer).
 
 **`reset()` WebView deposunu da temizler.** Jeton asıl olarak sayfanın `localStorage`'ında durur ve
-Android'de o depo diske yazılır. `reset()` kabuk deposunu boşaltır ve sayfa yeniden yüklenmeden
-**önce** çalışan bir script'le `localStorage`/`sessionStorage`'ı siler — kabuk deposu tek doğruluk
-kaynağıdır, dolayısıyla süreç öldükten sonra bile bayat oturum bir sonraki açılışta temizlenir.
+Android'de o depo diske yazılır. `reset()` kabuk deposunu boşaltır (seri kanalda) ve sayfa yeniden
+yüklenmeden **önce** çalışan bir script'le `localStorage`/`sessionStorage`'ı siler — kabuk deposu
+tek doğruluk kaynağıdır, dolayısıyla süreç öldükten sonra bile bayat oturum bir sonraki açılışta
+temizlenir. Çıkış script'i depoya **bakmaz**, jetonu koşulsuz boş verir: çıkış anında deponun ne
+içerdiği iki kuyruğun yarışına bağlıdır, sayfanın doğru içeriği ise her hâlükârda temiz sayfadır.
 Yalnız köprü kurulamayan **ve** canlı bir WebView da olmayan durumda son çare olarak
 `WebStorage.deleteAllData()` çağrılır; bu çağrı **uygulama genelidir** (sizin kendi WebView'larınızın
 verisi de gider).
+
+**Çıkıştan sonra ESKİ sayfa jetonu geri yazamaz.** `reset()` yeniden yüklemeyi *başlatır*, ama yeni
+belge commit olana kadar eski belge ekranda kalır ve o aralıkta uçuşta olan bir `/session` yanıtı
+köprüye jetonu postalayabilir. Kabuk bir **oturum nesli** tutar: `reset()` nesli artırır ve ekrandaki
+her belgenin damgasını düşürür; damga yalnız yeni bir belge **commit** olduğunda geri konur
+(`WebViewClient.onPageCommitVisible` — javadoc'un deyişiyle "önceki gezinmelerden kalan içeriğin
+artık çizilmeyeceğinin garanti edildiği en erken nokta"; çizilmeyen yüzeyler için `onPageFinished`
+emniyet ağı). Damgasız bir belgeden gelen jeton **yok sayılır**, sebebi de: kabul edilseydi çıkan
+kullanıcının oturumu geri gelirdi.
 
 **Ziyaretçi jetonu `SharedPreferences`'ta durur, `EncryptedSharedPreferences`'ta değil.**
 Jeton bir kimlik doğrulama sırrı değil, anonim oturum tanıtıcısıdır (web'de `localStorage`'ın
@@ -389,8 +423,16 @@ npm run test:android-sdk:device # ./gradlew connectedDebugAndroidTest
 `NsuppWebChat` gerçek `WebView` ve gerçek `androidx.webkit` üzerinde koşar
 (`src/androidTest/.../NsuppWebChatTest.kt`): iki ayrı yerel HTTP sunucusu iki AYRI origin üretir ve
 köprünün yalnız **kendi origin'imizin ana çerçevesinde** göründüğü, alt çerçevenin jeton yazamadığı,
-gezinme kararının önek değil **origin** karşılaştırması olduğu, şema allowlist'i, POST ile kaçışın
-geri alındığı ve `reset()`in `localStorage`ı gerçekten sildiği ölçülür.
+gezinme kararının önek değil **origin** karşılaştırması olduğu, şema allowlist'inin hem doğrudan
+çağrıda hem **gerçek tıklamada** geçirmediği, POST ile kaçışın geri alındığı, `reset()`in
+`localStorage`ı gerçekten sildiği, **oturum nesli kapısının** çıkış sonrası uçuşta kalan eski
+belgenin jetonunu reddedip yeni belgeninkini kabul ettiği ve `reset()`in **tüm** canlı yüzeyleri
+sıfırladığı ölçülür. Ayrıca: sayfa sıfırlaması kabuk deposuna **hiç dokunmuyor** (geç drenaj olan
+bir çıkış, arada açılan yeni oturumun jetonunu ezemiyor) ve dışarı kaçış sonrası "yalnız bir
+kurtarma" hakkı **yüzey başına** tutuluyor (bir yüzeyin hakkını tüketmesi diğerini ne cezalandırıyor
+ne de ona ikinci hak veriyor). `NsuppResetIsParcaciginaTest` ayrıca `Nsupp.reset()`i arka plan iş
+parçacığından çağırır: WebView istisna atmamalı, sıfırlama uçuştaki isteğin arkasına dizilmeli ve
+tamamlanma geri-çağrımı ancak jeton silindikten SONRA, ana iş parçacığında çalışmalıdır.
 
 > **Niçin emülatör:** bu testler bir zamanlar elle yazılmış Android saplamalarına karşı koşuyordu.
 > Gerçek Gradle derlemesi açılınca hepsi "Unresolved reference" ile düştü — yani Android'i değil
