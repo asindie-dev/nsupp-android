@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  YALNIZ TEST APK'SI İÇİN. Bu manifest `src/androidTest` kaynak kümesine aittir; AAR'a ve
+  satıcının uygulamasına GİRMEZ (kütüphanenin kendi manifest'i `src/main/AndroidManifest.xml`
+  ve orada ne izin ne de cleartext bayrağı vardır).
+
+  · INTERNET: enstrümanlı testler 127.0.0.1'de gerçek bir HTTP sunucusu açar ve WebView oradan
+    gerçek belge yükler. Android'de soket açmak (loopback dahil) bu izne bağlıdır.
+  · usesCleartextTraffic: test sunucusu http'dir. Origin kapısını KANITLAMAK için iki AYRI
+    origin'den belge yüklemek gerekiyor; yerel TLS sertifikası üretmek testi kanıt gücü
+    ARTMADAN karmaşıklaştırırdı. Ürün tarafında taban https'tir ve kabuk `mixedContentMode`u
+    NEVER_ALLOW'a çeker.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <application android:usesCleartextTraffic="true">
+        <!-- Testlerin WebView'ı gerçekten gösterdiği kap; bkz. BosAktivite (niçin şart olduğu orada). -->
+        <activity android:name="com.nsupp.sdk.android.BosAktivite" android:exported="false" />
+    </application>
+</manifest>

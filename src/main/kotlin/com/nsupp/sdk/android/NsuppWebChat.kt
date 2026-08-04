@@ -197,6 +197,34 @@ class NsuppWebChat(
         return wv
     }
 
+    /**
+     * Yüzey kapandı — WebView'ı BIRAK ve YOK ET.
+     *
+     * ZORUNLU, isteğe bağlı bir temizlik değil. İki sebep:
+     *  · SIZINTI: bu sınıf `Nsupp.webChat` üzerinden uygulama ömrü boyunca yaşar. [webView] alanı
+     *    null'lanmazsa, WebView'ın `parent` zinciri (gömülü görünüm → … → DecorView) YOK EDİLMİŞ
+     *    Activity'nin tüm görünüm ağacını canlı tutar. Alan tek başına null'lansa bile WebView'ın
+     *    kendisi yok edilmeden ağdan/işlemciden çekilmez.
+     *  · YOKLAMA DURMAZ: sohbet sayfası (widget.js) kendi yoklamasını yapar. Yok edilmeyen bir
+     *    WebView ekran kapandıktan sonra da yoklamayı sürdürür — pil, veri ve sunucu yükü.
+     *
+     * `wv` KİMLİK KARŞILAŞTIRMASI şart: aynı anda ikinci bir yüzey açılmışsa [webView] ARTIK ona
+     * aittir; koşulsuz null'lamak canlı yüzeyi sessizce komutsuz bırakırdı.
+     *
+     * ÇAĞIRAN, WebView'ı görünüm ağacından ÖNCE çıkarır (`WebView.destroy` javadoc'u: "This method
+     * should be called after this WebView has been removed from the view system").
+     */
+    fun destroyWebView(wv: WebView) {
+        if (webView === wv) webView = null
+        try {
+            // Sürmekte olan yükleme `destroy`dan sonra geri-çağrım üretmesin.
+            wv.stopLoading()
+            wv.destroy()
+        } catch (e: Exception) {
+            Log.w(TAG, "WebView yok edilemedi: " + e)
+        }
+    }
+
     /** Sohbeti belirli bir konuşmada aç (bildirimden derin bağlantı). */
     fun openConversation(id: String) {
         val guvenli = JSONObject.quote(id)

@@ -101,21 +101,44 @@ web, mobil ve masaüstü birebir aynı görünür.
 **① Köşede ikon (balon) + kayan panel** — web'deki launcher'ın karşılığı:
 
 ```kotlin
-private val destek = NsuppChatPresenter(kip = NsuppSunumKipi.BALON)
+class App : Application() {
+    val destek = NsuppChatPresenter(kip = NsuppSunumKipi.BALON)
 
-override fun onCreate(savedInstanceState: Bundle?) {
-    super.onCreate(savedInstanceState)
-    setContentView(R.layout.activity_main)
-    destek.start(this)          // köşedeki ikon görünür; dokununca panel açılır/kapanır
+    override fun onCreate() {
+        super.onCreate()
+        Nsupp.init(this, apiBase = "https://api.nsupp.com", publicKey = "pk_…")
+        destek.start(this)      // `this` = Application → balon UYGULAMA GENELİNDE görünür
+    }
 }
 ```
 
-Kendi düğmenizden açmak isterseniz `kip = NsuppSunumKipi.PANEL` verin ve ikon çizmeyin:
+Balon, Activity'nin içerik kökünde yaşar; o kök Activity ile birlikte gider. `start(application)`
+bunu sizin yerinize halleder (`ActivityLifecycleCallbacks` ile her öne gelen ekrana yeniden koyar) —
+40 Activity'nizde tek tek çağrı yazmanız gerekmez. Balonu **yalnız bazı ekranlarda** istiyorsanız bu
+yolu kullanmayın, ilgili Activity'de `destek.start(this)` çağırın (`this` = Activity):
 
 ```kotlin
-private val destek = NsuppChatPresenter()          // varsayılan: PANEL
+override fun onCreate(savedInstanceState: Bundle?) {
+    super.onCreate(savedInstanceState)
+    setContentView(R.layout.activity_main)
+    destek.start(this)          // yalnız BU ekranda ikon görünür
+}
+```
+
+Kendi düğmenizden açmak isterseniz `kip = NsuppSunumKipi.EKRAN` verin ve ikon çizmeyin; sohbet
+**tam ekran** açılır:
+
+```kotlin
+private val destek = NsuppChatPresenter()          // varsayılan: EKRAN
 destekDugmesi.setOnClickListener { destek.present(this) }
 ```
+
+> **Kip adı mobilde `EKRAN`, masaüstünde `panel`.** Masaüstü kabuklarında (macOS, Electron)
+> balon-olmayan kip gerçekten **köşede kayan bir pencere** açar; mobilde **tam ekran** açar.
+> Aynı adı iki davranışa vermek, kodun yapmadığını vaat etmektir — bu yüzden adlar ayrı.
+> Telefonda "kendi düğmenizden açılan köşe penceresi" diye bir kip **yok**: 360×520 dp'lik bir
+> pencere telefon ekranının neredeyse tamamıdır ve kenar boşlukları yalnız okuma alanını daraltır.
+> Kayan panel yalnız `BALON` kipinde vardır (launcher paritesi: balona dokun-aç, tekrar dokun-kapat).
 
 **② Kendi arayüzünüze gömülü** — sekme, yan panel, ayrı ekran, bölünmüş görünümün yarısı:
 
@@ -144,20 +167,36 @@ içindir (kimlik, anlık bildirim, kendi ekranınızda göstermek istediğiniz m
 
 - **Balon şeffaf tam-ekran katman DEĞİLDİR.** Activity'nin içerik kökünde yalnız 60 dp'lik yer
   kaplar; kaplamadığı hiçbir piksel dokunma yakalamaz, yani sizin arayüzünüz tıklanabilir kalır.
-- **Ölçüler web widget'ıyla eşlenmiştir**: panel 360×520 dp, dar ekranda `ekran − 40` /
-  `ekran − 120` dp'ye kısılır (web'in `max-width`/`max-height` kuralı), balon 60 dp, kenar boşluğu
-  20 dp, balon varken panelin alt boşluğu 76 dp. Aynı sayılar masaüstü kabuğunda da geçerlidir.
+- **Ölçüler web widget'ıyla eşlenmiştir**: panel 360×520 dp, dar ekranda `kullanılabilir alan − 40` /
+  `kullanılabilir alan − 120` dp'ye kısılır (web'in `max-width`/`max-height` kuralı), balon 60 dp,
+  kenar boşluğu 20 dp, panelin alt boşluğu 76 dp. Aynı sayılar masaüstü kabuğunda da geçerlidir.
 - **Panel açıkken geri tuşu paneli kapatır**, Activity'nizi değil. Bunun için panel açılırken odağı
   alır (geri tuşu yalnız odaklı görünüm zincirine ulaşır); klavye açılmaz.
-- **Sistem çubukları hesaba katılır.** Kenardan kenara (Android 15 / targetSdk 35) pencerede balon
-  ve panel gezinme çubuğunun üstüne oturur; boşluk bilgisi **tüketilmez**, sizin düzeniniz de alır.
+- **Sistem çubukları TEK yerden hesaplanır.** Panelin **boyutu** kullanılabilir alandan gelir
+  (`WindowMetrics` − `WindowInsets`), **konumu** ise inset kadar yukarı itilir. Ölçü kaynağı olarak
+  `Configuration.screenWidthDp/screenHeightDp` **kullanılmaz**: Android 15'te o alanlar sistem
+  çubuklarını artık dışarıda bırakmıyor ([davranış değişikliği][a15]) ve hem oradan ölçüp hem
+  inset eklemek çift sayım demekti — 48 dp'lik gezinme çubuğunda panelin üst kenarı ekranın dışına
+  çıkıyordu. Kenardan kenara pencerede balon ve panel gezinme çubuğunun üstüne oturur; boşluk
+  bilgisi **tüketilmez**, sizin düzeniniz de alır.
+
+[a15]: https://developer.android.com/about/versions/15/behavior-changes-15
 - **Balonun rengi uygulamanızın tema vurgu rengidir** (`android:colorAccent`), çalışma alanı rengi
   değil: balon sohbet açılmadan önce görünür, o an widget yapılandırması henüz indirilmemiştir —
   rengi ağdan beklemek balonun geç ve renk atlayarak belirmesi demekti. Kendi ikonunuzu istiyorsanız
-  `PANEL` kipini kullanıp düğmeyi siz koyun.
+  `EKRAN` kipini kullanıp düğmeyi siz koyun.
 - **Aynı anda tek sohbet yüzeyi tutun.** Panel, gömülü görünüm ve `NsuppChatActivity` aynı köprüyü
   paylaşır; ikisi birden canlıyken komutlar (bildirimden konuşma açma, çıkışta sıfırlama) yalnız en
   son açılan yüzeye gider. İkinci yüzey açıldığında logcat'e `NsuppWebChat` etiketiyle uyarı düşer.
+- **Sohbet yüzeyi kapanınca WebView yok edilir.** `NsuppWebChatView` görünüm ağacından ayrılınca ve
+  `NsuppChatActivity` kapanınca WebView `destroy()` edilir. Yok edilmeseydi, uygulama ömrü boyunca
+  yaşayan köprü ölü Activity'nin görünüm ağacını canlı tutar ve widget'ın **kendi yoklaması sürerdi**
+  (kapanmış ekran için pil/veri/sunucu yükü). **Bedeli:** görünümü ağaçtan çıkarıp geri koyarsanız
+  sayfa **baştan yüklenir** — yazılmakta olan taslak gider. Sohbeti geçici olarak gizlemek istiyorsanız
+  görünümü ağaçtan çıkarmayın, `View.GONE` yapın (`presenter.dismiss()` zaten böyle çalışır).
+- **`EKRAN` kipinde `dismiss()` yoktur.** Tam ekran sohbet ayrı bir Activity'dedir ve geri tuşuyla
+  kapanır; presenter'ın onu dışarıdan kapatabilmesi için Activity'ye statik referans tutması
+  gerekirdi (ölü Activity'yi canlı tutan klasik sızıntı). Çağırırsanız logcat'e uyarı düşer.
 - **Çıkışta `presenter.reset()`** çağırmak yeter: içinde `Nsupp.reset()` vardır (jeton + oturum +
   sayfa) ve paneli kapatır. Yalnız `Nsupp.reset()` çağırırsanız panel açık kalır.
 
@@ -223,13 +262,15 @@ Oturum henüz yoksa kimlik **bekletilir** ve sohbet ilk açıldığında gönder
 
 ```kotlin
 // Sunum — üç yol (yukarıdaki bölüm)
-val destek = NsuppChatPresenter(kip = NsuppSunumKipi.BALON)
-destek.start(activity)                         // köşedeki ikon (yalnız BALON kipinde)
-destek.present(activity, conversationId)       // paneli aç (konuşma id'si isteğe bağlı)
-destek.dismiss(); destek.toggle(activity)
+val destek = NsuppChatPresenter(kip = NsuppSunumKipi.BALON)   // varsayılan: EKRAN (tam ekran)
+destek.start(application)                      // köşedeki ikon UYGULAMA GENELİNDE (yalnız BALON)
+destek.start(activity)                         // …ya da yalnız bu ekranda
+destek.present(activity, conversationId)       // BALON: paneli aç · EKRAN: tam ekran aç
+destek.dismiss()                               // BALON: paneli gizle · EKRAN: yok (geri tuşu)
+destek.toggle(activity)                        // BALON: aç/kapat
 destek.reset()                                 // ÇIKIŞTA — Nsupp.reset()'i de kapsar
 NsuppWebChatView(context)                      // kendi düzeninize gömülü görünüm
-NsuppChatActivity.start(context)               // hazır tam ekran
+NsuppChatActivity.start(context)               // hazır tam ekran (EKRAN kipinin açtığı ekran)
 
 Nsupp.init(context, apiBase, publicKey)
 Nsupp.send(text) { ok -> … }                   // başarısızsa false
@@ -324,20 +365,42 @@ src/main/kotlin/com/nsupp/sdk/
 └─ android/         ← ince kabuk: HttpURLConnection, SharedPreferences, Compose, FCM
 ```
 
-Çekirdek Android'e dokunmadığı için **emülatörsüz test edilir**:
+Testler Gradle ile koşar. Gerekli ortam: **JDK 17** (`JAVA_HOME`) ve Android SDK'sı
+(`ANDROID_HOME` ya da `local.properties` içinde `sdk.dir` — bu dosya makineye özeldir, depoya
+girmez).
+
+**1) Birim testleri — emülatörsüz.** Çekirdek (`NsuppApi` / `NsuppSession` / `Json`) ve sunum
+ölçüleri (`NsuppOlculer`) Android'e HİÇ dokunmaz:
 
 ```bash
-npm run test:android-sdk
+npm run test:android-sdk        # ./gradlew testDebugUnitTest
 ```
 
-56 test koşar (JSON kenar durumları ve derinlik gölgelemesi, jeton sızıntısı, tekilleme, imleç
-kayması, kimlik kuyruğu, ek/bot-seçimi çözümü, CSAT, kısıtlı oturum, kalıcı/geçici hata ayrımı). Bu betik `kotlinc` kullanır — Gradle/Android SDK gerektirmez.
+50 test koşar (JSON kenar durumları ve derinlik gölgelemesi, jeton sızıntısı, tekilleme, imleç
+kayması, kimlik kuyruğu, ek/bot-seçimi çözümü, CSAT, kısıtlı oturum, kalıcı/geçici hata ayrımı,
+panel ölçülerinin web paritesi).
 
-**WebView kabuğunun güvenlik sınırı da burada koşar.** `NsuppWebChat` gerçek `createWebView`
-kablolamasıyla test edilir (köprünün bağlandığı origin, gezinme kararları, dış bağlantı şeması,
-çıkışta depo temizliği); Android API'leri `tools/Shim*.kt` altındaki — ürüne/AAR'a **girmeyen** —
-saplamalarla temsil edilir. Bu, derlemenin söyleyemediğini söyler; **imza uyumunun** kanıtı yine
-Gradle derlemesidir (`build.gradle.kts`).
+**2) WebView kabuğunun güvenlik sınırı — GERÇEK cihaz/emülatör gerekir.**
+
+```bash
+npm run test:android-sdk:device # ./gradlew connectedDebugAndroidTest
+```
+
+`NsuppWebChat` gerçek `WebView` ve gerçek `androidx.webkit` üzerinde koşar
+(`src/androidTest/.../NsuppWebChatTest.kt`): iki ayrı yerel HTTP sunucusu iki AYRI origin üretir ve
+köprünün yalnız **kendi origin'imizin ana çerçevesinde** göründüğü, alt çerçevenin jeton yazamadığı,
+gezinme kararının önek değil **origin** karşılaştırması olduğu, şema allowlist'i, POST ile kaçışın
+geri alındığı ve `reset()`in `localStorage`ı gerçekten sildiği ölçülür.
+
+> **Niçin emülatör:** bu testler bir zamanlar elle yazılmış Android saplamalarına karşı koşuyordu.
+> Gerçek Gradle derlemesi açılınca hepsi "Unresolved reference" ile düştü — yani Android'i değil
+> taklidi test ediyorlardı ve hiçbir şey kanıtlamamışlardı. Kabuğun kanıtlanacak tek şeyi köprünün
+> hangi origin'e açıldığıdır ve bu yalnız gerçek WebView'da gözlenebilir.
+>
+> **Kanıtlanmayan tek dal (dürüst sınır):** WebView sürümü `DOCUMENT_START_SCRIPT` /
+> `WEB_MESSAGE_LISTENER` desteklemediğinde köprünün HİÇ kurulmaması (fail-closed). `WebViewFeature`
+> cihazın WebView sürümünden okur ve testten zorlanamaz; güncel WebView'lı emülatörde bu dal
+> koşmaz.
 
 ## Yayın durumu
 
