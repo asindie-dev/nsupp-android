@@ -53,7 +53,7 @@ class NsuppFileChooserActivity : Activity() {
         geriCagrim = slotuAl()
         val secici = intentiOku()
         if (geriCagrim == null || secici == null) {
-            Log.w(TAG, "bekleyen dosya seçici isteği yok, kapanıyor")
+            Log.w(TAG, "no pending file chooser request, closing")
             finish()
             return
         }
@@ -61,7 +61,7 @@ class NsuppFileChooserActivity : Activity() {
             startActivityForResult(secici, ISTEK_KODU)
         } catch (e: Exception) {
             // Cihazda dosya seçebilecek uygulama yok. Girişi kilitli bırakmıyoruz: null teslim.
-            bitir(null, "dosya seçici açılamadı: " + e)
+            bitir(null, "file chooser could not be opened: " + e)
         }
     }
 
@@ -73,7 +73,7 @@ class NsuppFileChooserActivity : Activity() {
         val sonuc = try {
             WebChromeClient.FileChooserParams.parseResult(sonucKodu, veri)
         } catch (e: Exception) {
-            Log.w(TAG, "seçici sonucu okunamadı: " + e)
+            Log.w(TAG, "chooser result could not be read: " + e)
             null
         }
         bitir(sonuc, null)
@@ -99,7 +99,7 @@ class NsuppFileChooserActivity : Activity() {
         try {
             cb.onReceiveValue(sonuc)
         } catch (e: Exception) {
-            Log.w(TAG, "seçici sonucu sayfaya verilemedi: " + e)
+            Log.w(TAG, "chooser result could not be delivered to the page: " + e)
         }
     }
 
@@ -113,7 +113,7 @@ class NsuppFileChooserActivity : Activity() {
     private fun intentiOku(): Intent? = try {
         intent?.getParcelableExtra(EK_SECICI) as? Intent
     } catch (e: Exception) {
-        Log.w(TAG, "seçici niyeti okunamadı: " + e)
+        Log.w(TAG, "chooser intent could not be read: " + e)
         null
     }
 
@@ -171,7 +171,7 @@ class NsuppFileChooserActivity : Activity() {
             } catch (e: Exception) {
                 // Tipik sebep: satıcının manifest'ine bu Activity birleşmemiş. Sessiz kalmıyoruz.
                 slotuAl()
-                teshis("dosya seçici kabuğu açılamadı (manifest kaydı eksik olabilir): " + e)
+                teshis("file chooser host could not be started (the manifest entry may be missing): " + e)
                 false
             }
         }

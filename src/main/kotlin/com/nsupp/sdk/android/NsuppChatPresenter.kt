@@ -142,7 +142,7 @@ class NsuppChatPresenter(private val kip: NsuppSunumKipi = NsuppSunumKipi.EKRAN)
         val k = kokHazirla(activity) ?: return
         val chat = Nsupp.webChat
         if (chat == null) {
-            Log.w(TAG, "Nsupp.init() çağrılmadan present() çağrıldı — sohbet açılmadı")
+            Log.w(TAG, "present() called before Nsupp.init() — chat not opened")
             return
         }
         // Balondaki ile aynı sebep: eski Activity'ye dönüldüğünde referans null'dır ama panel
@@ -189,7 +189,7 @@ class NsuppChatPresenter(private val kip: NsuppSunumKipi = NsuppSunumKipi.EKRAN)
      */
     fun dismiss() {
         if (kip == NsuppSunumKipi.EKRAN) {
-            Log.w(TAG, "EKRAN kipinde dismiss() yok — tam ekran sohbet geri tuşuyla kapanır")
+            Log.w(TAG, "dismiss() does not apply in SCREEN mode — full-screen chat closes with the back button")
             return
         }
         panel?.visibility = View.GONE
@@ -218,7 +218,7 @@ class NsuppChatPresenter(private val kip: NsuppSunumKipi = NsuppSunumKipi.EKRAN)
     private fun kokHazirla(activity: Activity): FrameLayout? {
         val yeni = activity.findViewById<View>(android.R.id.content) as? FrameLayout
         if (yeni == null) {
-            Log.w(TAG, "içerik kökü bulunamadı, sohbet yüzeyi eklenmedi")
+            Log.w(TAG, "content root not found, chat surface not attached")
             return null
         }
         if (kok !== yeni) {

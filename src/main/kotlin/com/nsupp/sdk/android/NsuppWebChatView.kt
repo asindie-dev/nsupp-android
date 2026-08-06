@@ -46,7 +46,7 @@ class NsuppWebChatView @JvmOverloads constructor(
         val chat = Nsupp.webChat
         if (chat == null) {
             // Sessiz kilit YASAK: boş bir dikdörtgen "bozuk" görünür ama sebebini söylemez.
-            Log.w(TAG, "Nsupp.init() çağrılmadan NsuppWebChatView eklendi — sohbet yüklenmedi")
+            Log.w(TAG, "NsuppWebChatView was added before Nsupp.init() — chat not loaded")
             return
         }
         // UYGULAMA bağlamı: `createWebView` verilen bağlamı dış bağlantıları açan geri-çağrımda

@@ -183,7 +183,7 @@ class NsuppWebChat(
             // Sıfırlama TÜM yüzeylere gider (bkz. [Yuzey]); ama KOMUT (bildirimden konuşma açma)
             // tek bir yüzeye — kullanıcının o an baktığı, yani EN SON yaratılana. Sessiz kilit
             // teşhis edilemez, en azından sebebi logcat'e yazılır.
-            Log.w(TAG, "ikinci sohbet yüzeyi açıldı; komutlar yalnız en son yüzeye gidiyor")
+            Log.w(TAG, "a second chat surface was opened; commands only reach the most recent surface")
         }
         val wv = WebView(context.applicationContext)
         wv.settings.javaScriptEnabled = true
@@ -255,7 +255,7 @@ class NsuppWebChat(
                 if (ayniOrigin(Uri.parse(url))) return
                 view?.stopLoading()
                 if (yuzey.kurtarmaDenendi) {
-                    onLoadFailed?.invoke("sohbet adresi kendi sunucumuzun dışına yönlendiriyor")
+                    onLoadFailed?.invoke("the chat address redirects outside our own server")
                     return
                 }
                 yuzey.kurtarmaDenendi = true
@@ -265,7 +265,7 @@ class NsuppWebChat(
             override fun onReceivedError(view: WebView?, req: WebResourceRequest?, err: WebResourceError?) {
                 // YALNIZ ana çerçevenin hatası kullanıcıya yansır; bir ikonun düşmesi "sohbet
                 // açılmadı" demek değildir.
-                if (req?.isForMainFrame == true) onLoadFailed?.invoke(err?.description?.toString() ?: "yüklenemedi")
+                if (req?.isForMainFrame == true) onLoadFailed?.invoke(err?.description?.toString() ?: "could not load")
             }
 
             override fun shouldOverrideUrlLoading(view: WebView?, req: WebResourceRequest?): Boolean {
@@ -284,7 +284,7 @@ class NsuppWebChat(
                 // bir uygulamanın kimliği doğrulanmış derin bağlantısını tetikleyebilir.
                 val sema = uri.scheme?.lowercase()
                 if (sema != "http" && sema != "https" && sema != "mailto" && sema != "tel") {
-                    Log.w(TAG, "izin verilmeyen şema, açılmadı: " + sema)
+                    Log.w(TAG, "scheme not allowed, not opened: " + sema)
                     return true
                 }
                 return try {
@@ -336,14 +336,14 @@ class NsuppWebChat(
             // ① ORIGIN — kabuğun zaten kurduğu kaynak kapısı, izin yüzeyinde de aynısı.
             val origin = request.origin
             if (origin == null || !ayniOrigin(origin)) {
-                izniReddet(request, "medya izni YABANCI origin'den istendi, reddedildi: " + origin)
+                izniReddet(request, "media permission requested from a FOREIGN origin, denied: " + origin)
                 return
             }
             // ② YALNIZ MİKROFON. Kamera/MIDI/korumalı-medya reddedilir; "hepsini iste, birini
             // ver" de reddedilir — birden çok kaynak istendiğinde hangisinin gerçekten
             // kullanılacağını bilemeyiz, dar kapsam güvenli olandır.
             if (kaynaklar.size != 1 || kaynaklar[0] != PermissionRequest.RESOURCE_AUDIO_CAPTURE) {
-                izniReddet(request, "yalnız mikrofon açılır; istenen: " + kaynaklar.joinToString())
+                izniReddet(request, "only the microphone is opened; requested: " + kaynaklar.joinToString())
                 return
             }
             // ③ ANDROID ÇALIŞMA-ZAMANI İZNİ. `grant()` yalnız WEB tarafını açar; Android'in
@@ -356,8 +356,8 @@ class NsuppWebChat(
             ) {
                 izniReddet(
                     request,
-                    "mikrofon isteği reddedildi: uygulamanın RECORD_AUDIO izni yok — " +
-                        "manifest'e ekleyip çalışma-zamanı iznini isteyin (bkz. android-sdk README)",
+                    "microphone request denied: the app has no RECORD_AUDIO permission — " +
+                        "add it to the manifest and request the runtime permission (see the android-sdk README)",
                 )
                 return
             }
@@ -389,13 +389,13 @@ class NsuppWebChat(
             // davranışının aynısıdır ve kullanıcı dosyayı zaten kendi eliyle seçer.
             val adres = view?.url
             if (adres == null || !ayniOrigin(Uri.parse(adres))) {
-                teshis("dosya seçici YABANCI belgede istendi, açılmadı: " + adres)
+                teshis("file chooser requested on a FOREIGN document, not opened: " + adres)
                 return false
             }
             val secici = try {
                 fileChooserParams.createIntent()
             } catch (e: Exception) {
-                teshis("dosya seçici niyeti üretilemedi: " + e)
+                teshis("file chooser intent could not be built: " + e)
                 return false
             }
             return NsuppFileChooserActivity.baslat(context, secici, filePathCallback) { teshis(it) }
@@ -406,7 +406,7 @@ class NsuppWebChat(
         try {
             request.deny()
         } catch (e: Exception) {
-            Log.w(TAG, "izin reddedilemedi: " + e)
+            Log.w(TAG, "permission could not be denied: " + e)
         }
         teshis(sebep)
     }
@@ -442,7 +442,7 @@ class NsuppWebChat(
             wv.stopLoading()
             wv.destroy()
         } catch (e: Exception) {
-            Log.w(TAG, "WebView yok edilemedi: " + e)
+            Log.w(TAG, "WebView could not be destroyed: " + e)
         }
     }
 
@@ -558,13 +558,13 @@ class NsuppWebChat(
         if (kural == null) {
             // Sessiz kilit yasak: yükleme de başarısız olacağı için kullanıcı `onLoadFailed`
             // görecek, ama sebebi ancak bu iz söyler.
-            Log.w(TAG, "apiBase bir http(s) origin'ine ayrışmadı, köprü kurulmadı: " + config.base)
+            Log.w(TAG, "apiBase did not parse into an http(s) origin, bridge not installed: " + config.base)
             return
         }
         if (!ozelliklerDestekli()) {
             // FAIL-CLOSED: origin'e bağlanamıyorsak köprüyü HİÇ kurmuyoruz. Bedeli README'de
             // yazılı — alan adı kilidi açık kiracıda o cihazlarda sohbet anahtarsız kalır.
-            Log.w(TAG, "WebView sürümü origin-kurallı köprüyü desteklemiyor, köprü kurulmadı")
+            Log.w(TAG, "this WebView version does not support the origin-scoped bridge, bridge not installed")
             return
         }
         val kurallar = setOf(kural)
@@ -573,7 +573,7 @@ class NsuppWebChat(
             yuzey.scriptHandler = WebViewCompat.addDocumentStartJavaScript(wv, baslangicScripti(), kurallar)
         } catch (e: Exception) {
             yuzey.scriptHandler = null
-            Log.w(TAG, "köprü kurulamadı: " + e)
+            Log.w(TAG, "bridge could not be installed: " + e)
         }
     }
 

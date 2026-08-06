@@ -221,7 +221,7 @@ class NsuppSession(
             if (n != nesil.get()) return
             if (e.isPermanent) {
                 stopped = true
-                emit(state.copy(error = e.message ?: "Oturum geçersiz"))
+                emit(state.copy(error = e.message ?: "Session invalid"))
             }
         } catch (_: Exception) {
             // GEÇİCİ hata SESSİZ: ağ kesintisinde ekrana hata basmak gürültüdür; gönderim hatası
