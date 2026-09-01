@@ -37,8 +37,54 @@ data class NsuppConfig(
      */
     val appKey: String? = null,
 ) {
+    /**
+     * 🔴🔴 `apiBase` ŞEMASI HİÇ DOĞRULANMIYORDU (ölçüldü 2026-09-01) — iOS ikizi AYNI turda
+     *    kapandı (`NsuppConfig.init` → `NsuppConfigError.invalidApiBase`).
+     *
+     * ÖLÇÜLEN KUSUR: bu yapıcı HERHANGİ bir dizeyi kabul ediyordu; tek işlem sondaki `/`
+     * kırpmaktı. İki AYRI sonuç doğuruyordu:
+     *  ① `http://destek.satici.com` → ziyaretçi konuşmaları, ekleri, kimlik imzası ve UYGULAMA
+     *     ANAHTARI ağda DÜZ METİN gider. Aynı sınıf kapı SUNUCUDA zaten var (`apps/server/src/
+     *     env.ts` → `COF_AI_BASE_URL` düz-metin kapısı); açık olan İSTEMCİ ucuydu.
+     *  ② Şemasız (`api.nsupp.com`) ya da boş dize → `Uri.parse` bir origin'e ayrışmaz, köprü hiç
+     *     kurulmaz ve satıcı yalnız logcat'te tek satır görür (`NsuppWebChat`: "apiBase did not
+     *     parse into an http(s) origin"). Sessiz kilit = teşhis edilemez hata.
+     *
+     * 🔴 LOOPBACK MUAF — VE BU BİR İSTİSNA DEĞİL, KURULUMUN KENDİSİ: bu paketin aygıt testleri
+     *    `http://127.0.0.1:<port>` ile koşar (`YerelSunucu.kok`). `https` şart koşmak KENDİ
+     *    kapımızı kırardı — kapı düzeltmeyi engellememeli.
+     * 🔴 MUAFİYET KÜMESİ SUNUCUYLA AYNI (`env.ts`): iki yerde iki ayrı "yerel" tanımı zamanla
+     *    AYRIŞIRDI. `[::1]` de kümededir çünkü JVM `URI.getHost()` köşeli parantezi KORUR,
+     *    Foundation `URL.host` SOYAR — iki platform aynı kümeyle aynı kararı verir.
+     * 🔴 FIRLATIR, SESSİZCE GEÇMEZ: `apiBase` derleme zamanı bir sabittir; geçersizse
+     *    entegrasyonun İLK koşusunda patlaması gerekir. Sessiz no-op, sohbeti kalıcı ve sebepsiz
+     *    ölü bırakır — bu deponun kayıtlı "sessiz kilit" kusur sınıfı.
+     */
+    init {
+        require(isValidApiBase(apiBase)) {
+            "nsupp: invalid apiBase (" + apiBase + ") — expected an https:// origin. " +
+                "Cleartext http:// is accepted only for loopback (localhost, 127.0.0.1, ::1)."
+        }
+    }
+
     /** Sondaki '/' kırpılır: "https://api.test//widget/..." bazı ters-proxy'lerde 404 verir. */
     val base: String get() = apiBase.trimEnd('/')
+
+    companion object {
+        /** Düz metin `http://` için TEK muafiyet — sunucudaki `env.ts` kapısıyla AYNI küme. */
+        val LOOPBACK_HOSTS: Set<String> = setOf("localhost", "127.0.0.1", "::1", "[::1]")
+
+        /** iOS `NsuppConfig.isValidApiBase` ile AYNI karar tablosu. */
+        fun isValidApiBase(apiBase: String): Boolean {
+            val u = runCatching { java.net.URI(apiBase.trim()) }.getOrNull() ?: return false
+            val sema = u.scheme?.lowercase() ?: return false
+            val host = u.host?.lowercase() ?: return false
+            if (host.isEmpty()) return false
+            if (sema == "https") return true
+            if (sema != "http") return false
+            return host in LOOPBACK_HOSTS
+        }
+    }
 }
 
 /** Mesaj eki (görsel, dosya, ses…). Sunucu DTO'suyla aynı alanlar. */
