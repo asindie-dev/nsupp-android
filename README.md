@@ -372,6 +372,23 @@ içerik türünde balon boş bırakılmaz, "gösterilemiyor" yazar — sessiz bo
 
 **Metinler cihaz dilini izler** (tr/en) — kapsam bilinçli olarak ürünün geri kalanıyla aynı.
 
+## Gizlilik beyanı — Play **Data safety** formu
+
+Android'de iOS'un `PrivacyInfo.xcprivacy` dosyasının karşılığı **yoktur**: Google Play beyanı
+depoda bir dosyayla değil, Play Console'daki **Data safety** formuyla alır. Yani SDK'nın
+taşıyabileceği bir artefakt yok — beyanı uygulama sahibi olarak siz doldurursunuz.
+
+SDK'nın taşıdığı veri, iOS eşleniğiyle **birebir aynıdır** (aynı sunucu uçları, aynı protokol):
+
+| Veri | Ne zaman gider | Play formundaki yeri |
+| --- | --- | --- |
+| E-posta ve ad | yalnız `identify(email, name)` çağırırsanız | Personal info → Email address / Name |
+| Destek mesajları ve ekleri | ziyaretçi yazdığında/dosya eklediğinde | Messages → Other in-app messages · Photos and videos |
+| Ziyaretçi jetonu | her oturumda (sohbetin sürekliliği için) | App activity → Other actions |
+
+Üçünün de amacı **App functionality**'dir. SDK reklam kimliği okumaz, veri satmaz ve üçüncü
+taraf izleyicisi çalıştırmaz.
+
 ## Bilinmesi gerekenler
 
 **Sohbet WebView'ı yalnız kendi origin'imizde çalışır ve kimlik ORIGIN'e bağlıdır.**
