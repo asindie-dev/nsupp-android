@@ -71,6 +71,21 @@ internal class PrefsTokenStore(context: Context, publicKey: String) : NsuppToken
     override fun write(token: String?) {
         prefs.edit().apply { if (token == null) remove("visitorToken") else putString("visitorToken", token) }.apply()
     }
+
+    /**
+     * SUNUCUDA KAYITLI FCM JETONU — çıkışın sunucu ayağı bunsuz çalışamaz.
+     *
+     * 🔴 NİÇİN DİSKTE, BELLEKTE DEĞİL: kayıt uygulama açılışında yapılır, çıkış ise ÇOK SONRA
+     *    (çoğu zaman başka bir süreçte) gelir. Alanda tutsaydık "uygulama yeniden başladıktan
+     *    sonra yapılan çıkış" — yani gerçek hayattaki çıkışların çoğu — silinecek jetonu bulamaz
+     *    ve sunucu satırı SESSİZCE ayakta kalırdı. Aynı gerekçe iOS tarafında da yazılı.
+     *
+     * Ziyaretçi jetonuyla AYNI dosyada ve aynı yaşam döngüsünde: uygulama silinince ikisi de gider.
+     */
+    fun readPushDevice(): String? = prefs.getString("pushDeviceToken", null)
+    fun writePushDevice(token: String?) {
+        prefs.edit().apply { if (token == null) remove("pushDeviceToken") else putString("pushDeviceToken", token) }.apply()
+    }
 }
 
 /**
@@ -102,6 +117,12 @@ object Nsupp {
     @Volatile private var scope: CoroutineScope? = null
     private var pollJob: Job? = null
     private var pendingPushToken: String? = null
+    /**
+     * Kalıcı FCM jeton kaydı — çıkışta sunucudaki cihaz satırını düşürmek için (bkz.
+     * [PrefsTokenStore.readPushDevice]). `session` ile birlikte kurulur, `@Volatile` gerekçesi de
+     * onunkiyle aynı.
+     */
+    @Volatile private var pushDeposu: PrefsTokenStore? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
     val current: NsuppSession?
@@ -123,9 +144,13 @@ object Nsupp {
         if (session != null) return
         val cfg = NsuppConfig(apiBase, publicKey, appKey = appKey)
         val store = PrefsTokenStore(context, publicKey)
+        pushDeposu = store
         val s = NsuppSession(NsuppApi(cfg, AndroidHttp()), store)
         // Sohbet arayüzü WebView'da; `NsuppSession` artık YALNIZ kimlik/bildirim/yapılandırma için.
-        webChat = NsuppWebChat(cfg, store)
+        // Bağlam ÜÇÜNCÜ argüman: çıkışta kalıcı WebView önbelleğini silmek için gerekli
+        // (bkz. `NsuppWebChat.onbellegiTemizle`). Bağlamsız kurulsaydı, sohbet o süreçte
+        // hiç açılmadan yapılan çıkış temizlenecek WebView'ı bulamazdı.
+        webChat = NsuppWebChat(cfg, store, context.applicationContext)
         // 🔴 TEK İŞ PARÇACIĞI: NsuppSession'ın durumu (state/seen/lastTs) korumasız alanlar — saf
         // Kotlin olması için bilinçli bir tercih. Çok-iş-parçacıklı bir IO havuzunda `send` ile
         // `pollOnce` çakışırsa mesaj kaybı ve bozuk imleç üretir. `limitedParallelism(1)` çekirdeği
@@ -150,7 +175,7 @@ object Nsupp {
         pollJob = sc.launch {
             s.start()
             // Anlık bildirim jetonu oturumdan ÖNCE geldiyse şimdi kaydedilir (yarış kapanır).
-            pendingPushToken?.let { t -> pendingPushToken = null; s.registerPushToken(t) }
+            pendingPushToken?.let { t -> pendingPushToken = null; pushJetonunuGonder(s, t) }
             // Yoklama YALNIZ ekran açıkken. Arka planda değil: pili yakar ve Android süreci öldürür;
             // arka plan işi FCM'in işidir.
             //
@@ -296,7 +321,22 @@ object Nsupp {
             // Bekleyen anlık-bildirim jetonu da SERİ kanalda düşürülür: onu okuyan yer
             // ([onChatOpened] döngüsü) aynı kanalda koşuyor.
             pendingPushToken = null
-            s?.reset()
+            /**
+             * SUNUCUDAKİ CİHAZ KAYDI DA DÜŞER. Yerel jetonu silmek YETMEZ: satır sunucuda kalır ve
+             * gönderim yükü çalışma alanı ADINI + mesaj ÖNİZLEMESİNİ taşır — paylaşılan/devredilen
+             * telefonda önceki kullanıcının destek yazışması sonraki sahibin KİLİT EKRANINA düşer.
+             * Bildirimi sistem çizer; istemci tarafında bastırmak mümkün değil.
+             *
+             * Jeton ÇEKİRDEĞE VERİLİR, burada silinmez: sıra (sunucu adımı → yerel silme) çekirdekte
+             * korunur, çünkü sunucu sahibi ziyaretçi jetonundan bulur ve o jeton `reset()` içinde
+             * siliniyor (bkz. `NsuppSession.reset`).
+             */
+            val depo = pushDeposu
+            s?.reset(depo?.readPushDevice())
+            // Kayıt DÜŞTÜ (ya da hiç yoktu): yerel iz de kalmaz. Silme başarısız olsa bile burayı
+            // temizleriz — jeton artık bu kullanıcıya ait değil ve sunucu tarafında saklama süresi
+            // tavanı devrede (`VISITOR_PUSH_DEVICE_RETENTION_DAYS`).
+            depo?.writePushDevice(null)
             if (onComplete != null) mainHandler.post { onComplete() }
         }
         // Paylaşılan cihazda sonraki kullanıcı öncekinin sohbetini EKRANDA görmemeli: sayfa
@@ -326,6 +366,23 @@ object Nsupp {
     fun registerPushToken(token: String) {
         val s = session
         if (s?.visitorToken == null) { pendingPushToken = token; return }
-        scope?.launch { s.registerPushToken(token) }
+        scope?.launch { pushJetonunuGonder(s, token) }
+    }
+
+    /**
+     * PUSH JETONUNU GÖNDER **VE KALICI OLARAK NOT ET** — kaydın TEK darboğazı.
+     *
+     * İki çağıran var (doğrudan [registerPushToken] ve [onChatOpened]'ın bekleyen-jeton drenajı);
+     * notu ikisine ayrı ayrı yazsaydık biri unutulduğunda çıkış o cihazı SESSİZCE düşüremezdi —
+     * ve hangi yoldan kaydedildiğine bağlı olarak bazen çalışan bir çıkış en kötü türdendir.
+     *
+     * NOT AĞ ÇAĞRISINDAN ÖNCE: [NsuppSession.registerPushToken] hatayı yutar, yani "kaydoldu mu"
+     * bilinmez. Kaydolmamış bir jeton için çıkışta yapılan silme çağrısı ZARARSIZDIR (sunucu
+     * eşleşen satır bulamaz); tersi — kaydolmuş ama not edilmemiş jeton — düşürülemeyen bir
+     * satır bırakırdı.
+     */
+    private fun pushJetonunuGonder(s: NsuppSession, token: String) {
+        pushDeposu?.writePushDevice(token)
+        s.registerPushToken(token)
     }
 }

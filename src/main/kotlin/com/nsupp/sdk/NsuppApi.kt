@@ -462,4 +462,21 @@ class NsuppApi(private val config: NsuppConfig, private val http: NsuppHttp) {
         sb.append("}")
         call("/devices", "POST", sb.toString())
     }
+
+    /**
+     * ÇIKIŞTA cihaz kaydını DÜŞÜR — [registerDevice]'ın eksik ikinci yarısı (ölçüldü 2026-09-02).
+     *
+     * Kayıt satırı yalnız ziyaretçi silinince (CASCADE) ya da sağlayıcı "bu cihaz yok" deyince
+     * kalkıyordu; çıkış sunucuya HİÇ uğramıyordu. Paylaşılan/devredilen telefonda satır yaşamaya
+     * devam eder ve gönderim yükü çalışma alanı ADINI + mesaj ÖNİZLEMESİNİ taşır — yani önceki
+     * kullanıcının destek yazışması sonraki sahibin KİLİT EKRANINA düşer. Bildirimi sistem çizer;
+     * istemci tarafında bastırılamaz.
+     *
+     * OTURUM SIRRI BAŞLIKTA (`call`ın `visitorToken` yolu), cihaz jetonu GÖVDEDE: ikisi de
+     * kişisel veridir, sorgu dizesine hiçbiri konmaz. Operatör düzlemindeki ikizi de böyledir
+     * (`DELETE /cof/push/devices`, gövde `deviceToken`).
+     */
+    fun unregisterDevice(token: String, deviceToken: String) {
+        call("/devices", "DELETE", """{"deviceToken":${Json.quote(deviceToken)}}""", visitorToken = token)
+    }
 }

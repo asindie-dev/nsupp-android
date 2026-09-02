@@ -373,10 +373,28 @@ class NsuppSession(
      * `false` yapar; sunucuya çoktan gitmiş bir `/session`/`/identify` çağrısının yanıtı yine de
      * döner. Nesil artışı o yanıtların hiçbir şey yazamamasını sağlar (bkz. [nesil]) — aksi hâlde
      * silinen jeton geri gelirdi.
+     *
+     * @param pushDeviceToken bu cihazın SUNUCUDA kayıtlı FCM jetonu (varsa). Verilirse çıkış
+     *   sunucuya da ulaşır: kayıt satırı düşürülür. Verilmezse yalnız YEREL çıkış yapılır —
+     *   çekirdeği doğrudan kullanan (Android kabuğunu kullanmayan) çağıranların davranışı
+     *   değişmez. Değeri kabuk tutar ([com.nsupp.sdk.android.Nsupp]); bu sınıf saf Kotlin'dir
+     *   ve `SharedPreferences` göremez.
+     *
+     * 🔴 SUNUCU ADIMI YEREL SİLMEDEN ÖNCE VE BU FONKSİYONUN İÇİNDE — çağrı yerinde DEĞİL:
+     *    ① sunucu sahibi ZİYARETÇİ JETONUNDAN bulur; `store.write(null)`dan sonra çağırsaydık
+     *       elimizde kimlik kalmaz ve istek 401 alırdı (sessizce hiçbir şey silinmezdi).
+     *    ② darboğaza koymak, ileride açılacak ikinci bir çıkış yolunun bu adımı ATLAMASINI
+     *       imkânsız kılar (aynı ders operatör düzleminde `upsertOperatorPushDevice`te ödendi).
      */
-    fun reset() {
+    fun reset(pushDeviceToken: String? = null) {
         stopped = true
         nesil.incrementAndGet()
+        // Ağ adımı bloklar ve BAŞARISIZ OLABİLİR (uçak modunda çıkış); yerel çıkışı ona
+        // bağlamayız — jeton her hâlükârda silinir, sunucu satırı için saklama süresi tavandır.
+        if (pushDeviceToken != null) {
+            val token = store.read()
+            if (token != null) try { api.unregisterDevice(token, pushDeviceToken) } catch (_: Exception) {}
+        }
         store.write(null)
         seen.clear()
         lastTs = null

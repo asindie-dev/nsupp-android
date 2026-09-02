@@ -63,6 +63,14 @@ import java.lang.ref.WeakReference
 class NsuppWebChat(
     private val config: NsuppConfig,
     private val store: NsuppTokenStore,
+    /**
+     * Uygulama bağlamı — YALNIZ çıkışta kalıcı HTTP önbelleğini silmek için (bkz.
+     * [onbellegiTemizle]). Varsayılanı `null`: enstrümanlı testler bu köprüyü bağlamsız kurar ve
+     * orada ölçülen şey önbellek değildir. Üretimde `Nsupp.init` GERÇEK bağlamı geçer — aksi hâlde
+     * "sohbet bu süreçte hiç açılmadan yapılan çıkış" (uygulama yeniden başladıktan sonraki çıkış)
+     * temizlenecek WebView'ı bulamaz ve ÖNCEKİ sürecin diske yazdığı önbellek yerinde kalırdı.
+     */
+    private val uygulamaBaglami: Context? = null,
 ) {
     /** Yükleme başarısız oldu mu — arayüz sebebi gösterir; boş beyaz ekran "bozuk" demektir. */
     var onLoadFailed: ((String) -> Unit)? = null
@@ -488,6 +496,8 @@ class NsuppWebChat(
      * parçacığına postalar (bkz. sınıf belgesi).
      */
     fun reset() {
+        // 🔴 DİSK ÖNBELLEĞİ HER ŞEYDEN ÖNCE — yeniden yükleme başlamadan (bkz. [onbellegiTemizle]).
+        onbellegiTemizle()
         // Ekranda duran belgelerin HEPSİ artık bayat: yenisi commit olana kadar hiçbiri jeton
         // yazamaz. Nesil ARTIŞI yeniden yükleme başlamadan ÖNCE yapılır — arada düşen bir mesaj
         // silinmiş oturumu geri getirmesin.
@@ -539,6 +549,61 @@ class NsuppWebChat(
      * postalayamaz; damgalamamak kapıyı ikinci kez kapatır ve "damga = bizim belgemiz" değişmezini
      * korur.
      */
+    /**
+     * ÇIKIŞTA KALICI HTTP ÖNBELLEĞİNİ SİL — çıkışın DİSKE dokunan tek ayağı.
+     *
+     * ── NİÇİN VAR (ölçüldü 2026-09-02) ────────────────────────────────────────────────────────
+     * [reset] jetonu, `localStorage`ı, geçmişi ve ekranı temizliyordu; WebView'ın KALICI kaynak
+     * önbelleğine HİÇ dokunmuyordu. Widget'ın PII taşıyan yanıtları (`/widget/<key>/messages` ve
+     * `/conversations` — ölçüldü: bu iki uçta `cache-control` başlığı YOK) ve gösterilen ek/medya
+     * dosyaları Chromium'un disk önbelleğine yazılabilir. Yani paylaşılan/devredilen bir cihazda
+     * çıkış yapan kullanıcının destek yazışması `app_webview/.../HTTP Cache` altında KALIYORDU —
+     * üstelik uygulama yeniden başlatmasını da atlatarak, tanımlı bir saklama süresi olmadan.
+     *
+     * ── AYRIŞMA: iOS'ta BU KUSUR YOK ──────────────────────────────────────────────────────────
+     * `NsuppWebChat.swift` deposu `.nonPersistent()`tir: orada aynı konuşma diske HİÇ yazılmaz.
+     * Aynı ürünün iki platformu aynı soruya ters cevap veriyordu; eşdeğer-koruma bunu kapatır.
+     *
+     * ── ÇEREZ NİÇİN TEMİZLENMİYOR (kapsam kararı, tahmin değil) ───────────────────────────────
+     * Widget düzleminde ÇEREZ KULLANILMIYOR: `widget-routes.ts`te `Set-Cookie` = 0 sonuç,
+     * `widget.js`te `document.cookie` = 0 sonuç. `CookieManager.removeAllCookies()` çağırmak
+     * SATICININ kendi WebView oturumlarını düşürürdü — bizim veremiz olmayan bir veriyi silmek.
+     *
+     * ── ÖDÜNLEŞİM: `clearCache` UYGULAMA GENELİDİR ────────────────────────────────────────────
+     * WebView sözleşmesi: önbellek uygulama başınadır, yani satıcının kendi WebView'larının
+     * önbelleği de gider. Bilinçli tercih: kaybedilen şey ÖNBELLEKTİR (yeniden indirilir, veri
+     * kaybı yok) ve yalnız kullanıcının başlattığı ÇIKIŞ anında olur — [reset]in ölü-yüzey
+     * dalındaki `WebStorage.deleteAllData()` ödünleşiminin aynısının DAHA HAFİF hâli.
+     * Tam yalıtım (androidx `ProfileStore` ile nsupp'a özel profil) WebView SÜRÜMÜNE bağlıdır ve
+     * bu makinede doğrulanamadı; `clearCache` her sürümde vardır ve kusuru bugün kapatır.
+     *
+     * CANLI YÜZEY VARSA ONUN ÜZERİNDEN: önbellek zaten tekil olduğu için hangi örneğin çağırdığı
+     * fark etmez; yeni bir WebView kurmamak ucuz olandır. Hiç canlı yüzey yoksa (EN SIK çıkış
+     * akışı: kullanıcı sohbeti kapatır, SONRA çıkar) geçici bir örnek kurulur ve hemen yok edilir.
+     */
+    private fun onbellegiTemizle() {
+        val canli = yuzeyler.firstOrNull { it.webView != null }?.webView
+        if (canli != null) {
+            try {
+                canli.clearCache(true)
+            } catch (e: Exception) {
+                Log.w(TAG, "HTTP cache could not be cleared: " + e)
+            }
+            return
+        }
+        val ctx = uygulamaBaglami ?: return
+        try {
+            val gecici = WebView(ctx)
+            try {
+                gecici.clearCache(true)
+            } finally {
+                gecici.destroy()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "HTTP cache could not be cleared: " + e)
+        }
+    }
+
     private fun nesliDamgala(view: WebView?, url: String?) {
         if (view == null || url == null || url == "about:blank") return
         if (!ayniOrigin(Uri.parse(url))) return
