@@ -63,16 +63,24 @@ kaynaktan, çalışma alanı ayarından gelir.
 
 ## Kurulum
 
-`settings.gradle.kts` — modülü dahil edin (yayınlanmış artefakt için aşağıdaki nota bakın):
+Artefakt Maven Central'da — `mavenCentral()` depo listenizde olmalı (varsayılan Android
+şablonunda zaten var):
 
 ```kotlin
-include(":nsupp-sdk")
-project(":nsupp-sdk").projectDir = file("../nsupp/packages/android-sdk")
+dependencies {
+    implementation("com.nsupp:nsupp-android:0.1.0")
+}
 ```
 
-Uygulama modülünüzde:
+Yerel bir kopyaya karşı derlemek isterseniz modülü kaynak olarak da dahil edebilirsiniz —
+sözleşme aynıdır, yalnız bağımlılık satırı değişir:
 
 ```kotlin
+// settings.gradle.kts
+include(":nsupp-sdk")
+project(":nsupp-sdk").projectDir = file("../nsupp/packages/android-sdk")
+
+// uygulama modülü
 dependencies {
     implementation(project(":nsupp-sdk"))
 }
@@ -510,6 +518,11 @@ tamamlanma geri-çağrımı ancak jeton silindikten SONRA, ana iş parçacığı
 
 ## Yayın durumu
 
-Modül kaynak olarak dahil edilir; Maven Central artefaktı (`com.nsupp:nsupp-sdk`) henüz
-yayınlanmadı — yayın anahtarları gerekiyor. Kaynak dahil etme sözleşmeyi değiştirmez, yalnız
-bağımlılık satırı değişecektir.
+`com.nsupp:nsupp-android:0.1.0` **Maven Central'da yayında** (2026-09-03).
+Yayınlanan dosyalar: `.aar` · `-sources.jar` · `-javadoc.jar` · `.pom`, hepsi GPG imzalı.
+Android kütüphanesi olduğu için artefakt `.aar`'dır; `.jar` yoktur.
+
+🔴 **Koordinat tuzağı:** artifactId `nsupp-android`, **`nsupp-sdk` değil** — `nsupp-sdk` yalnız
+depo içindeki Gradle modül adıdır. Bu ayrım repoda üç yerde yanlış yazılmıştı (bu dosya,
+`packages/react-native-sdk/android/build.gradle` ve `/docs` Android sayfası); üçü de düzeltildi.
+Koordinat `packages/android-sdk/build.gradle.kts` içindeki `artifactId` satırından okunur.
